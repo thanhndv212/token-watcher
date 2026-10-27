@@ -401,6 +401,40 @@
   // grouped quota display, instead of one full-width card per window.
   const WINDOW_TAG_ORDER = { "5h": 0, hourly: 0, daily: 1, weekly: 2, monthly: 3, yearly: 4 };
 
+  // Countdown text for a reset timestamp, e.g. "2d 4h", "3h 12m", "45m".
+  // Returns "" when there is no timestamp or it has already passed.
+  function formatResetCountdown(resetTimeIso) {
+    if (!resetTimeIso) return "";
+    const diff = new Date(resetTimeIso).getTime() - Date.now();
+    if (!Number.isFinite(diff) || diff <= 0) return "";
+    const totalMinutes = Math.max(1, Math.floor(diff / 60000));
+    const d = Math.floor(totalMinutes / 1440);
+    const h = Math.floor((totalMinutes % 1440) / 60);
+    const m = totalMinutes % 60;
+    if (d > 0) return d + "d " + h + "h";
+    if (h > 0) return h + "h " + m + "m";
+    return m + "m";
+  }
+
+  // A span whose countdown text is kept current by tickResetCountdowns().
+  function resetCountdownEl(resetTimeIso, attrs) {
+    const text = formatResetCountdown(resetTimeIso);
+    const span = el("span", {
+      ...attrs,
+      title: resetTimeIso ? "Resets " + new Date(resetTimeIso).toLocaleString() : "",
+    });
+    if (resetTimeIso) span.dataset.resetAt = resetTimeIso;
+    span.textContent = text ? "⟳ " + text : "";
+    return span;
+  }
+
+  function tickResetCountdowns() {
+    for (const span of $$("[data-reset-at]")) {
+      const text = formatResetCountdown(span.dataset.resetAt);
+      span.textContent = text ? "⟳ " + text : "";
+    }
+  }
+
   function windowTag(entry) {
     const label = (entry.label || "").trim().replace(/:+$/, "").trim();
     return label || entry.name;
@@ -437,26 +471,9 @@
 
   function renderGroupedCard(groupName, windows) {
     const card = el("div", { className: "card" });
-    card.appendChild(
-      el("div", { className: "card-title", style: { marginBottom: "10px" } }, groupName),
-    );
-
-    // Find the shortest reset time across all windows for the status line
-    let shortestReset = "";
-    let shortestDiff = Infinity;
-    for (const w of windows) {
-      if (w.resetTimeIso) {
-        const diff = new Date(w.resetTimeIso) - new Date();
-        if (diff > 0 && diff < shortestDiff) {
-          shortestDiff = diff;
-        }
-      }
-    }
-    if (shortestDiff > 0 && shortestDiff < Infinity) {
-      const h = Math.floor(shortestDiff / 3600000);
-      const m = Math.floor((shortestDiff % 3600000) / 60000);
-      shortestReset = h > 24 ? Math.floor(h / 24) + "d" : h + "h " + m + "m";
-    }
+    const header = el("div", { className: "card-header", style: { marginBottom: "10px" } });
+    header.appendChild(el("span", { className: "card-title" }, groupName));
+    card.appendChild(header);
 
     for (const w of windows) {
       const remaining = Math.max(0, Math.min(100, w.percentRemaining || 0));
@@ -514,25 +531,22 @@
         ),
       );
 
-      card.appendChild(row);
-    }
-
-    // Reset countdown
-    if (shortestReset) {
-      card.appendChild(
-        el(
-          "div",
-          {
-            style: {
-              marginTop: "6px",
-              fontSize: "10px",
-              color: "var(--text-muted)",
-              textAlign: "right",
-            },
+      // Per-window reset countdown
+      row.appendChild(
+        resetCountdownEl(w.resetTimeIso, {
+          className: "reset-countdown",
+          style: {
+            width: "56px",
+            fontSize: "10px",
+            fontFamily: "var(--font-mono)",
+            textAlign: "right",
+            flexShrink: "0",
+            color: "var(--text-muted)",
           },
-          "⟳ " + shortestReset,
-        ),
+        }),
       );
+
+      card.appendChild(row);
     }
 
     return card;
@@ -734,6 +748,13 @@
     }
     card.appendChild(header);
 
+    if (entry.kind === "value" && formatResetCountdown(entry.resetTimeIso)) {
+      const meta = el("div", { className: "percent-bar-label" });
+      meta.appendChild(el("span"));
+      meta.appendChild(resetCountdownEl(entry.resetTimeIso, { className: "value" }));
+      card.appendChild(meta);
+    }
+
     if (entry.kind !== "value" && entry.percentRemaining != null) {
       const remaining = Math.max(0, Math.min(100, entry.percentRemaining));
       const used = 100 - remaining;
@@ -750,16 +771,7 @@
       const label = el("div", { className: "percent-bar-label" });
       label.appendChild(el("span", { className: "value" }, Math.round(used) + "% used"));
 
-      let resetText = "";
-      if (entry.resetTimeIso) {
-        const diff = new Date(entry.resetTimeIso) - new Date();
-        if (diff > 0) {
-          const h = Math.floor(diff / 3600000);
-          const m = Math.floor((diff % 3600000) / 60000);
-          resetText = h > 24 ? Math.floor(h / 24) + "d " + (h % 24) + "h" : h + "h " + m + "m";
-        }
-      }
-      label.appendChild(el("span", { className: "value" }, resetText ? "⟳ " + resetText : ""));
+      label.appendChild(resetCountdownEl(entry.resetTimeIso, { className: "value" }));
       card.appendChild(label);
     }
 
@@ -2697,6 +2709,10 @@
     loadAlerts();
     loadPricing();
     loadApikeyStatus();
+
+    // Keep reset countdowns current between quota refreshes without re-rendering.
+    const countdownTimer = setInterval(tickResetCountdowns, 30000);
+    window.addEventListener("beforeunload", () => clearInterval(countdownTimer), { once: true });
 
     // Listen for refresh events from main process
     if (api.app.onRefresh) {
