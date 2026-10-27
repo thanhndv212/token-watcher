@@ -2,6 +2,8 @@
 
 Use the [project README](../README.md) for installation, configuration and usage, and the [contributing guide](../CONTRIBUTING.md) for the development workflow.
 
+- [Coding-agent usage analysis roadmap](usage-analysis-roadmap.md): planned session usage reports, native Codex reader and import of outcome/activity metadata from Session Knowledge.
+
 ## Implemented work items
 
 Project documentation lives under `docs/` by default. Work-item designs and completed implementation records live in `work-items/`; each document states its status. They preserve implementation contracts, acceptance evidence, known limits and compatibility or rollback details. Work-item IDs and existing filenames are retained for traceability.
