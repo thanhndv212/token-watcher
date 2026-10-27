@@ -435,6 +435,17 @@
     }
   }
 
+  function accountSubtitleEl(account) {
+    return el(
+      "span",
+      {
+        className: "card-subtitle card-account",
+        title: account,
+      },
+      account,
+    );
+  }
+
   function windowTag(entry) {
     const label = (entry.label || "").trim().replace(/:+$/, "").trim();
     return label || entry.name;
@@ -473,6 +484,8 @@
     const card = el("div", { className: "card" });
     const header = el("div", { className: "card-header", style: { marginBottom: "10px" } });
     header.appendChild(el("span", { className: "card-title" }, groupName));
+    const account = windows.find((w) => w.account)?.account;
+    if (account) header.appendChild(accountSubtitleEl(account));
     card.appendChild(header);
 
     for (const w of windows) {
@@ -745,12 +758,16 @@
           entry.value,
         ),
       );
+    } else if (entry.account) {
+      header.appendChild(accountSubtitleEl(entry.account));
     }
     card.appendChild(header);
 
-    if (entry.kind === "value" && formatResetCountdown(entry.resetTimeIso)) {
+    if (entry.kind === "value" && (entry.account || formatResetCountdown(entry.resetTimeIso))) {
       const meta = el("div", { className: "percent-bar-label" });
-      meta.appendChild(el("span"));
+      meta.appendChild(
+        el("span", { className: "card-subtitle card-account" }, entry.account || ""),
+      );
       meta.appendChild(resetCountdownEl(entry.resetTimeIso, { className: "value" }));
       card.appendChild(meta);
     }
