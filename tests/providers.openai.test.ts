@@ -32,6 +32,25 @@ describe("openai provider", () => {
     expectNotAttempted(out);
   });
 
+  it("attaches the login email as the account on every window", async () => {
+    const { queryOpenAIQuota } = await import("../src/lib/openai.js");
+    (queryOpenAIQuota as any).mockResolvedValueOnce({
+      success: true,
+      label: "OpenAI (Plus)",
+      email: "dev@example.com",
+      windows: {
+        hourly: { percentRemaining: 42 },
+        weekly: { percentRemaining: 80 },
+      },
+    });
+
+    const out = await openaiProvider.fetch({} as any);
+    expect(out.entries.map((entry) => entry.account)).toEqual([
+      "dev@example.com",
+      "dev@example.com",
+    ]);
+  });
+
   it("maps success into canonical grouped-capable windows with single-window display metadata", async () => {
     const { queryOpenAIQuota } = await import("../src/lib/openai.js");
     (queryOpenAIQuota as any).mockResolvedValueOnce({
