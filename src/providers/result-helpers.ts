@@ -55,8 +55,10 @@ export function groupedPercentWindowEntries(params: {
     label: string;
   }>;
   fallbackWhenEmpty?: boolean;
+  account?: string;
 }): QuotaToastEntry[] {
   const entries: QuotaToastEntry[] = [];
+  const account = params.account ? { account: params.account } : {};
 
   for (const { window, suffix, label } of params.windows) {
     if (!window) continue;
@@ -67,11 +69,12 @@ export function groupedPercentWindowEntries(params: {
       label,
       percentRemaining: window.percentRemaining,
       resetTimeIso: window.resetTimeIso,
+      ...account,
     });
   }
 
   if (entries.length === 0 && params.fallbackWhenEmpty !== false) {
-    entries.push({ name: params.group, percentRemaining: 0 });
+    entries.push({ name: params.group, percentRemaining: 0, ...account });
   }
 
   return entries;

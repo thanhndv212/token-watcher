@@ -58,6 +58,7 @@ export const anthropicProvider: QuotaProvider = {
       return attemptedErrorResult("Claude", result.error);
     }
 
+    const account = result.email ? { account: result.email } : {};
     const entries: QuotaToastEntry[] = [
       {
         name: "Claude 5h",
@@ -65,6 +66,7 @@ export const anthropicProvider: QuotaProvider = {
         label: "5h:",
         percentRemaining: result.five_hour.percentRemaining,
         resetTimeIso: result.five_hour.resetTimeIso,
+        ...account,
       },
       {
         name: "Claude Weekly",
@@ -72,6 +74,7 @@ export const anthropicProvider: QuotaProvider = {
         label: "Weekly:",
         percentRemaining: result.seven_day.percentRemaining,
         resetTimeIso: result.seven_day.resetTimeIso,
+        ...account,
       },
     ];
 

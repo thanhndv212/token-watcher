@@ -57,6 +57,8 @@ export interface AnthropicQuotaResult {
   success: true;
   five_hour: { percentRemaining: number; resetTimeIso?: string };
   seven_day: { percentRemaining: number; resetTimeIso?: string };
+  /** Login email reported by `claude auth status --json`, when available. */
+  email?: string;
 }
 
 export interface AnthropicQuotaError {
@@ -111,6 +113,7 @@ type AnthropicLocalDiagnostics = {
   checkedCommands: string[];
   message?: string;
   localQuota?: AnthropicQuotaResult;
+  accountEmail?: string;
 };
 
 type ClaudeCredentialsAccess =
@@ -212,6 +215,17 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function extractAuthEmail(data: unknown): string | undefined {
+  const record = asRecord(data);
+  if (!record) return undefined;
+  for (const candidate of [record["email"], asRecord(record["account"])?.["email"]]) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return sanitizeDisplayText(candidate.trim());
+    }
+  }
+  return undefined;
 }
 
 function normalizeResetTimeIso(value: unknown): string | undefined {
@@ -1052,13 +1066,16 @@ async function probeAnthropicLocalDiagnostics(
   }
 
   const quota = parsedAuth.jsonPayload ? parseUsageResponse(parsedAuth.jsonPayload) : null;
+  const accountEmail = extractAuthEmail(parsedAuth.jsonPayload);
+  const account = accountEmail ? { accountEmail } : {};
   if (quota) {
     return {
       installed: true,
       version,
       authStatus: "authenticated",
       checkedCommands,
-      localQuota: quota,
+      localQuota: accountEmail ? { ...quota, email: accountEmail } : quota,
+      ...account,
     };
   }
 
@@ -1068,6 +1085,7 @@ async function probeAnthropicLocalDiagnostics(
     authStatus: "authenticated",
     checkedCommands,
     message: CLAUDE_NO_LOCAL_QUOTA_MESSAGE,
+    ...account,
   };
 }
 
@@ -1137,7 +1155,9 @@ export async function getAnthropicDiagnostics(
     quotaSupported: true,
     quotaSource: "claude-credentials-oauth-api",
     checkedCommands: localDiagnostics.checkedCommands,
-    quota: fallbackQuota.quota,
+    quota: localDiagnostics.accountEmail
+      ? { ...fallbackQuota.quota, email: localDiagnostics.accountEmail }
+      : fallbackQuota.quota,
   };
   return diagnostics;
 }

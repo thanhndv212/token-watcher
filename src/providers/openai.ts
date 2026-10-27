@@ -73,6 +73,7 @@ async function fetchWithAuth(
       ...attemptedResult(
         groupedPercentWindowEntries({
           group: result.label,
+          account: result.email,
           windows: [
             { window: result.windows.hourly, suffix: "5h", label: "5h:" },
             { window: result.windows.weekly, suffix: "Weekly", label: "Weekly:" },
