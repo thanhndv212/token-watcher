@@ -278,6 +278,18 @@ body {
   font-family: var(--font-mono);
 }
 
+.card-header .card-title {
+  flex-shrink: 0;
+}
+
+.card-account {
+  min-width: 0;
+  margin-left: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Percent Bar ───────────────────────────────────── */
 .percent-bar-container {
   height: 6px;

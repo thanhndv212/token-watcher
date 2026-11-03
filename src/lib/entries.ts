@@ -16,6 +16,8 @@ export interface GroupedQuotaEntryMeta {
   label?: string;
   /** Optional compact right-hand summary, e.g. "42/300". */
   right?: string;
+  /** Optional human-readable account the quota belongs to, e.g. a login email. */
+  account?: string;
 }
 
 export type QuotaToastEntry =

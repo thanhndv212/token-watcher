@@ -8,6 +8,7 @@ import {
   SessionNotFoundError,
 } from "./opencode-storage.js";
 import { iterClaudeCodeCliMessages } from "./claude-code-cli-storage.js";
+import { iterCodexCliMessages } from "./codex-cli-storage.js";
 import {
   hasCost,
   hasProvider,
@@ -493,6 +494,25 @@ function calculateCostUsd(params: {
   return { ok: true, costUsd: calculateUsdFromTokenBuckets(cost, params.tokens) };
 }
 
+/**
+ * Prices one message's tokens with the same mapping and snapshot as
+ * `aggregateUsage`. Returns `null` when the model is unknown or unpriced.
+ */
+export function priceTokensUsd(params: {
+  providerID?: string;
+  modelID?: string;
+  tokens: TokenBuckets;
+}): number | null {
+  const mapping = resolvePricingKey({ providerID: params.providerID, modelID: params.modelID });
+  if (!mapping.ok) return null;
+  const priced = calculateCostUsd({
+    provider: mapping.key.provider,
+    model: mapping.key.model,
+    tokens: params.tokens,
+  });
+  return priced.ok ? priced.costUsd : null;
+}
+
 function classifyMissingPricing(params: {
   mappedProvider: string;
   mappedModel: string;
@@ -612,19 +632,24 @@ export async function aggregateUsage(params: {
     });
   } else {
     // Global (unfiltered-by-session) view: also fold in the standalone
-    // Claude Code CLI's own local transcripts, which OpenCode's own message
-    // store never sees. Session-scoped calls above intentionally skip this -
-    // OpenCode session ids and Claude CLI session ids are different
+    // Claude Code and Codex CLIs' own local transcripts, which OpenCode's own
+    // message store never sees. Session-scoped calls above intentionally skip
+    // this - OpenCode session ids and CLI session ids are different
     // namespaces, so there's no "this OpenCode session" equivalent for them.
-    const [openCodeMessages, claudeCliMessages] = await Promise.all([
+    const [openCodeMessages, claudeCliMessages, codexCliMessages] = await Promise.all([
       iterAssistantMessages({ sinceMs: params.sinceMs, untilMs: params.untilMs }),
       iterClaudeCodeCliMessages({
         sinceMs: params.sinceMs,
         untilMs: params.untilMs,
         strictReads: params.strictReads,
       }),
+      iterCodexCliMessages({
+        sinceMs: params.sinceMs,
+        untilMs: params.untilMs,
+        strictReads: params.strictReads,
+      }),
     ]);
-    messages = [...openCodeMessages, ...claudeCliMessages];
+    messages = [...openCodeMessages, ...claudeCliMessages, ...codexCliMessages];
   }
   const sessionsIdx = await readAllSessionsIndex();
 

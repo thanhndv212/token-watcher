@@ -79,6 +79,22 @@ describe("anthropic provider", () => {
     ]);
   });
 
+  it("attaches the login email as the account on every window", async () => {
+    const { queryAnthropicQuota } = await import("../src/lib/anthropic.js");
+    (queryAnthropicQuota as any).mockResolvedValueOnce({
+      success: true,
+      email: "dev@example.com",
+      five_hour: { percentRemaining: 50 },
+      seven_day: { percentRemaining: 70 },
+    });
+
+    const out = await anthropicProvider.fetch({} as any);
+    expect(out.entries.map((entry) => entry.account)).toEqual([
+      "dev@example.com",
+      "dev@example.com",
+    ]);
+  });
+
   it("maps errors into toast errors", async () => {
     const { queryAnthropicQuota } = await import("../src/lib/anthropic.js");
     (queryAnthropicQuota as any).mockResolvedValueOnce({
@@ -104,7 +120,9 @@ describe("anthropic provider", () => {
     (hasAnthropicCredentialsConfigured as any).mockResolvedValue(false);
 
     await expect(
-      anthropicProvider.isAvailable(createProviderAvailabilityContext({ providerIds: ["anthropic"] })),
+      anthropicProvider.isAvailable(
+        createProviderAvailabilityContext({ providerIds: ["anthropic"] }),
+      ),
     ).resolves.toBe(true);
     await expect(
       anthropicProvider.isAvailable(
@@ -130,9 +148,8 @@ describe("anthropic provider", () => {
   });
 
   it("passes the configured Claude binary path through Anthropic probes", async () => {
-    const { hasAnthropicCredentialsConfigured, queryAnthropicQuota } = await import(
-      "../src/lib/anthropic.js"
-    );
+    const { hasAnthropicCredentialsConfigured, queryAnthropicQuota } =
+      await import("../src/lib/anthropic.js");
     (hasAnthropicCredentialsConfigured as any).mockResolvedValue(true);
     (queryAnthropicQuota as any).mockResolvedValueOnce(null);
 
@@ -155,9 +172,8 @@ describe("anthropic provider", () => {
   });
 
   it("forwards ctx.config.bypassCache so a manual refresh re-probes Claude CLI auth immediately", async () => {
-    const { hasAnthropicCredentialsConfigured, queryAnthropicQuota } = await import(
-      "../src/lib/anthropic.js"
-    );
+    const { hasAnthropicCredentialsConfigured, queryAnthropicQuota } =
+      await import("../src/lib/anthropic.js");
     (hasAnthropicCredentialsConfigured as any).mockResolvedValue(true);
     (queryAnthropicQuota as any).mockResolvedValueOnce(null);
 

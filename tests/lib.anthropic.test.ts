@@ -366,6 +366,46 @@ describe("Claude CLI diagnostics", () => {
     await expect(hasAnthropicCredentialsConfigured()).resolves.toBe(true);
   });
 
+  it("attaches the Claude CLI login email to local quota results", async () => {
+    mockExecSequence([
+      { stdout: "claude 1.2.3\n" },
+      {
+        stdout: JSON.stringify({
+          loggedIn: true,
+          email: "dev@example.com",
+          quota: {
+            five_hour: { used_percentage: 10 },
+            seven_day: { used_percentage: 20 },
+          },
+        }),
+      },
+    ]);
+
+    const quota = await queryAnthropicQuota();
+    expect(quota?.success && quota.email).toBe("dev@example.com");
+  });
+
+  it("attaches the Claude CLI login email to OAuth fallback quota results", async () => {
+    setProcessPlatform("linux");
+    mockExecSequence([
+      { stdout: "claude 1.2.3\n" },
+      { stdout: JSON.stringify({ loggedIn: true, email: "dev@example.com" }) },
+    ]);
+    readFileMock.mockResolvedValue(
+      JSON.stringify({ claudeAiOauth: { accessToken: "oauth-access-token" } }),
+    );
+    fetchWithTimeoutMock.mockResolvedValue(
+      mockJsonResponse({
+        five_hour: { utilization: 35 },
+        seven_day: { utilization: 15 },
+      }),
+    );
+
+    const diagnostics = await getAnthropicDiagnostics();
+    expect(diagnostics.quotaSource).toBe("claude-credentials-oauth-api");
+    expect(diagnostics.quota?.email).toBe("dev@example.com");
+  });
+
   it("keeps Anthropic availability local-only when only the OAuth fallback can provide quota", async () => {
     mockExecSequence([
       { stdout: "claude 1.2.3\n" },
@@ -488,14 +528,7 @@ describe("Claude CLI diagnostics", () => {
     expect(execFileMock).toHaveBeenNthCalledWith(
       3,
       "security",
-      [
-        "find-generic-password",
-        "-a",
-        expect.any(String),
-        "-w",
-        "-s",
-        "Claude Code-credentials",
-      ],
+      ["find-generic-password", "-a", expect.any(String), "-w", "-s", "Claude Code-credentials"],
       expect.any(Object),
       expect.any(Function),
     );
