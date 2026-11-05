@@ -52,7 +52,7 @@ These views answer the CLI questions that proved useful (Q1 to Q3 in the [roadma
 ## Limits
 
 - **Linux not run locally.** Only macOS was run on this machine. Linux relies on CI: the `desktop-smoke` jobs, and the desktop-artifacts AppImage smoke when that workflow runs.
-- **No real Session Knowledge export.** The imports section has only been checked against fixtures, as recorded in [UA-TW-04](UA_TW04_SESSION_KNOWLEDGE_IMPORT.md).
+- **Imports from a stand-in export.** Real Session Knowledge traces were imported through a converter script on 2026-11-05, as recorded in [UA-TW-04](UA_TW04_SESSION_KNOWLEDGE_IMPORT.md). The tab reads the same report, but the packaged smoke checks it only with an empty import store.
 - **This machine only.** The Sessions tab shows this machine's sessions. Other machines appear in the dashboard's All machines token view through `token-sync` (UA-TW-06), not in this tab.
 - **CLI wording in notes.** The notes repeat the CLI report notes, so some mention flags such as `--imports`.
 
