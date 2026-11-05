@@ -555,6 +555,63 @@ describe("pricing runtime refresh policy", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
+  it("rechecks a long-running process once the snapshot goes stale", async () => {
+    const pricing = await loadPricingModule();
+    const runtimeDirs = await createTempRuntimeDirs();
+    const nowMs = Date.UTC(2026, 10, 5);
+    const bootstrap = createBootstrapSnapshot(nowMs - DAY_MS);
+    const fetchFn = vi.fn().mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            openai: { models: { "gpt-4o-mini": { cost: { input: 0.3, output: 1 } } } },
+          }),
+          { status: 200 },
+        ),
+    );
+    const base = {
+      runtimeDirs,
+      fetchFn,
+      maxAgeMs: 3 * DAY_MS,
+      bootstrapSnapshotOverride: bootstrap,
+    };
+
+    expect((await pricing.maybeRefreshPricingSnapshot({ ...base, nowMs })).reason).toBe("fresh");
+    // Without recheck a second check in the same process is skipped, even when stale.
+    const later = nowMs + 5 * DAY_MS;
+    expect((await pricing.maybeRefreshPricingSnapshot({ ...base, nowMs: later })).reason).toBe(
+      "already_checked_this_process",
+    );
+    expect(fetchFn).not.toHaveBeenCalled();
+
+    // A recheck while still fresh fetches nothing.
+    const freshRecheck = await pricing.maybeRefreshPricingSnapshot({
+      ...base,
+      nowMs: nowMs + DAY_MS,
+      recheck: true,
+    });
+    expect(freshRecheck.reason).toBe("fresh");
+    expect(fetchFn).not.toHaveBeenCalled();
+
+    const staleRecheck = await pricing.maybeRefreshPricingSnapshot({
+      ...base,
+      nowMs: later,
+      recheck: true,
+    });
+    expect(staleRecheck).toMatchObject({ attempted: true, updated: true });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+
+    // The bundled selection is still never refreshed, recheck or not.
+    const bundled = await pricing.maybeRefreshPricingSnapshot({
+      ...base,
+      nowMs: later + 5 * DAY_MS,
+      recheck: true,
+      snapshotSelection: "bundled",
+    });
+    expect(bundled.reason).toBe("selection_bundled");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the last price of models models.dev no longer lists", async () => {
     const pricing = await loadPricingModule();
     const runtimeDirs = await createTempRuntimeDirs();

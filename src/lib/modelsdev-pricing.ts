@@ -75,6 +75,12 @@ export interface PricingRefreshOptions {
   providerAllowlist?: string[];
   snapshotSelection?: PricingSnapshotSource;
   allowRefreshWhenSelectionBundled?: boolean;
+  /**
+   * Check again even if this process already checked once. Staleness, the
+   * attempt throttle and the bundled selection still apply, unlike `force`.
+   * Long-running processes (the desktop app) use this on a timer.
+   */
+  recheck?: boolean;
 }
 
 export interface PricingRefreshResult {
@@ -551,7 +557,7 @@ export async function maybeRefreshPricingSnapshot(
       };
     }
 
-    if (!force && PROCESS_REFRESH_CHECKED) {
+    if (!force && !opts.recheck && PROCESS_REFRESH_CHECKED) {
       return {
         attempted: false,
         updated: false,

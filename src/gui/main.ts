@@ -43,6 +43,7 @@ import {
 import { preloadUserPricing } from "../lib/user-pricing.js";
 import { preloadBudgetAlerts } from "../lib/budget-alerts.js";
 import { fixGuiProcessPath } from "../lib/fix-gui-path.js";
+import { startPricingAutoRefresh, type PricingAutoRefresh } from "./pricing-auto-refresh.js";
 
 // IPC handlers
 import * as quotaIpc from "./ipc/quota.js";
@@ -502,6 +503,7 @@ let toggleCooldownUntil = 0;
 let quotaController: QuotaRefreshController | null = null;
 let historyBudgetRuntime: HistoryBudgetRuntime | null = null;
 let resetNotificationRuntime: ResetNotificationRuntime | null = null;
+let pricingAutoRefresh: PricingAutoRefresh | null = null;
 
 function createWindow(guiConfig: GuiConfig): BrowserWindow {
   const preloadPath = resolvePreloadPath();
@@ -605,6 +607,10 @@ app
     const projectRoot = await getStandaloneProjectRoot(process.argv.slice(1));
     const quotaConfig = await loadStandaloneQuotaConfig(projectRoot);
 
+    // Keep the models.dev snapshot within pricingSnapshot.autoRefresh days while the
+    // app stays open; loadStandaloneQuotaConfig has applied the configured policy.
+    pricingAutoRefresh = startPricingAutoRefresh();
+
     // Preload caches
     await preloadUserPricing();
     await preloadBudgetAlerts();
@@ -703,6 +709,8 @@ app.on("activate", () => {
 app.on("before-quit", () => {
   quotaController?.dispose();
   quotaController = null;
+  pricingAutoRefresh?.dispose();
+  pricingAutoRefresh = null;
   historyBudgetRuntime?.dispose();
   resetNotificationRuntime?.dispose();
   historyBudgetRuntime = null;
