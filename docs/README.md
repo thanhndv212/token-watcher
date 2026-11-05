@@ -43,6 +43,7 @@ These are the completed items with dedicated records. Other completed items have
 - [UA-TW-01 usage import contract record](work-items/UA_TW01_USAGE_IMPORT_CONTRACT.md): complete on the Token Watcher side; contract 1 parser, source-of-truth rule and machine identity.
 - [UA-TW-02 Codex session reader record](work-items/UA_TW02_CODEX_SESSION_READER.md): complete in PR #75 with green main CI; native Codex rollout usage in token reports.
 - [UA-TW-03 session usage report record](work-items/UA_TW03_SESSION_USAGE_REPORT.md): complete in PR #76 with green main CI; `token-watcher sessions` per-session, weekly and length-bucket usage.
+- [UA-TW-05 quota window usage record](work-items/UA_TW05_QUOTA_WINDOW_USAGE.md): complete; `token-watcher sessions --windows` places session tokens on recorded provider quota windows.
 
 - [CUS-02 durable local estimate record](work-items/CUS02_DURABLE_LOCAL_ESTIMATES.md): complete in PR #55 with green main CI; native journal, pricing coverage and installed CLI/Electron evidence.
 
