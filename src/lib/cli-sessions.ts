@@ -1,5 +1,6 @@
 import { basename } from "path";
 
+import { describeMachineIdentity } from "./machine-identity.js";
 import {
   buildSessionUsageReport,
   type SessionUsageDeps,
@@ -172,7 +173,8 @@ function isoDate(ms: number | null): string {
 export function formatSessionUsageText(report: SessionUsageReport, limit: number): string {
   const lines: string[] = [];
   const until = report.untilMs === null ? "now" : isoDate(report.untilMs);
-  lines.push(`Session usage ${isoDate(report.sinceMs)} to ${until} (UTC)`, "");
+  lines.push(`Session usage ${isoDate(report.sinceMs)} to ${until} (UTC)`);
+  lines.push(`Machine: ${describeMachineIdentity(report.machine)}`, "");
 
   lines.push("Sources:");
   for (const c of report.coverage) {

@@ -28,6 +28,12 @@ const deps: Partial<SessionUsageDeps> = {
   ],
   readCodex: async () => [],
   price: () => null,
+  machine: () => ({
+    machineId: "linux-box",
+    hostname: "linux-box",
+    mapped: false,
+    status: "no-match",
+  }),
 };
 
 describe("parseSessionsArgs", () => {
@@ -84,6 +90,7 @@ describe("runCliSessionsCommand", () => {
 
     expect(code).toBe(0);
     expect(text).toContain("Session usage 2026-09-20 to now (UTC)");
+    expect(text).toContain("Machine: linux-box (unmapped: host not in machine registry)");
     expect(text).toContain("claude-code  1 sessions, 1 responses");
     expect(text).toContain("opencode     no local store found");
     expect(text).toContain("codex        0 sessions, 0 responses, subagents not marked");
@@ -96,6 +103,12 @@ describe("runCliSessionsCommand", () => {
     const out = capture();
     await runCliSessionsCommand({ argv: ["--json"], nowMs: NOW, deps, stdout: out.stream });
     const report = JSON.parse(out.read());
+    expect(report.machine).toEqual({
+      machineId: "linux-box",
+      hostname: "linux-box",
+      mapped: false,
+      status: "no-match",
+    });
     expect(report.sessions[0]).toMatchObject({
       sessionID: "claude-session-1",
       costUsd: null,

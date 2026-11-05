@@ -25,6 +25,7 @@ import {
   iterClaudeCodeCliMessages,
 } from "./claude-code-cli-storage.js";
 import { getCodexCliSessionsDir, iterCodexCliMessages } from "./codex-cli-storage.js";
+import { resolveMachineIdentity, type MachineIdentity } from "./machine-identity.js";
 import { priceTokensUsd } from "./quota-stats.js";
 import {
   addTokenBuckets,
@@ -110,6 +111,8 @@ export type LengthBucketRow = UsageSummary & {
 
 export type SessionUsageReport = {
   generatedAtMs: number;
+  /** This host's Session Knowledge machine id, or its hostname when unmapped. */
+  machine: MachineIdentity;
   sinceMs: number | null;
   untilMs: number | null;
   coverage: SourceCoverage[];
@@ -127,6 +130,7 @@ export type SessionUsageDeps = {
   readCodex: (p: { sinceMs?: number; untilMs?: number }) => Promise<OpenCodeMessage[]>;
   storeExists: (source: SessionUsageSource) => boolean;
   price: (p: { providerID?: string; modelID?: string; tokens: TokenBuckets }) => number | null;
+  machine: () => MachineIdentity;
 };
 
 const defaultDeps: SessionUsageDeps = {
@@ -144,6 +148,7 @@ const defaultDeps: SessionUsageDeps = {
     );
   },
   price: priceTokensUsd,
+  machine: () => resolveMachineIdentity(),
 };
 
 export const SESSION_USAGE_NOTES = [
@@ -506,6 +511,7 @@ export async function buildSessionUsageReport(
 
   return {
     generatedAtMs: params.nowMs ?? Date.now(),
+    machine: d.machine(),
     sinceMs: params.sinceMs ?? null,
     untilMs: params.untilMs ?? null,
     coverage: SESSION_USAGE_SOURCES.map((source) => coverage.get(source)!),
