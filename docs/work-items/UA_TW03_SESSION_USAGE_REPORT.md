@@ -1,6 +1,6 @@
 # UA-TW-03 session usage report
 
-Issue: [#70](https://github.com/thanhndv212/token-watcher/issues/70) (epic [#67](https://github.com/thanhndv212/token-watcher/issues/67)). Status: in progress; implementation is in review. Evidence date: 2026-10-18. Depends on UA-TW-02 ([#69](https://github.com/thanhndv212/token-watcher/issues/69), PR [#75](https://github.com/thanhndv212/token-watcher/pull/75)).
+Issue: [#70](https://github.com/thanhndv212/token-watcher/issues/70) (epic [#67](https://github.com/thanhndv212/token-watcher/issues/67)). Status: complete. [PR #76](https://github.com/thanhndv212/token-watcher/pull/76) merged at `33213af` on 2026-10-18; [main CI 39143087154](https://github.com/thanhndv212/token-watcher/actions/runs/39143087154) passed. Evidence date: 2026-10-18. Depends on UA-TW-02 ([#69](https://github.com/thanhndv212/token-watcher/issues/69), PR [#75](https://github.com/thanhndv212/token-watcher/pull/75)).
 
 ## Command
 

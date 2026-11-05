@@ -1,6 +1,6 @@
 # UA-TW-02 native Codex session usage reader
 
-Issue: [#69](https://github.com/thanhndv212/token-watcher/issues/69) (epic [#67](https://github.com/thanhndv212/token-watcher/issues/67)). Status: in progress; implementation is in review. Evidence date: 2026-10-18. Dependencies: none.
+Issue: [#69](https://github.com/thanhndv212/token-watcher/issues/69) (epic [#67](https://github.com/thanhndv212/token-watcher/issues/67)). Status: complete. [PR #75](https://github.com/thanhndv212/token-watcher/pull/75) merged at `25c9984` on 2026-10-18; [main CI 39142802631](https://github.com/thanhndv212/token-watcher/actions/runs/39142802631) passed. Evidence date: 2026-10-18. Dependencies: none.
 
 ## Contract
 
