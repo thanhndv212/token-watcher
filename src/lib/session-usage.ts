@@ -249,7 +249,7 @@ function openCodeRoot(sessionID: string, index: Record<string, OpenCodeSessionIn
   }
 }
 
-type TaggedMessage = {
+export type TaggedMessage = {
   source: SessionUsageSource;
   rootID: string;
   subagent: boolean;
@@ -278,18 +278,15 @@ type SessionAccumulator = {
   unpricedTokens: number;
 };
 
-export async function buildSessionUsageReport(
-  params: {
-    sinceMs?: number;
-    untilMs?: number;
-    nowMs?: number;
-    /** Also place responses on recorded provider quota windows (UA-TW-05). */
-    quotaWindows?: boolean;
-  } = {},
+/**
+ * Reads every native source and tags each response with its root session.
+ * Shared by the session report and cross-machine sync (UA-TW-06).
+ */
+export async function loadSessionMessages(
+  window: { sinceMs?: number; untilMs?: number } = {},
   deps: Partial<SessionUsageDeps> = {},
-): Promise<SessionUsageReport> {
+): Promise<{ coverage: Map<SessionUsageSource, SourceCoverage>; tagged: TaggedMessage[] }> {
   const d: SessionUsageDeps = { ...defaultDeps, ...deps };
-  const window = { sinceMs: params.sinceMs, untilMs: params.untilMs };
 
   const coverage = new Map<SessionUsageSource, SourceCoverage>();
   const tagged: TaggedMessage[] = [];
@@ -355,6 +352,24 @@ export async function buildSessionUsageReport(
   for (const t of tagged) {
     if (t.message.subagent !== undefined) coverage.get(t.source)!.marksSubagents = true;
   }
+  return { coverage, tagged };
+}
+
+export async function buildSessionUsageReport(
+  params: {
+    sinceMs?: number;
+    untilMs?: number;
+    nowMs?: number;
+    /** Also place responses on recorded provider quota windows (UA-TW-05). */
+    quotaWindows?: boolean;
+  } = {},
+  deps: Partial<SessionUsageDeps> = {},
+): Promise<SessionUsageReport> {
+  const d: SessionUsageDeps = { ...defaultDeps, ...deps };
+  const { coverage, tagged } = await loadSessionMessages(
+    { sinceMs: params.sinceMs, untilMs: params.untilMs },
+    deps,
+  );
 
   const sessions = new Map<string, SessionAccumulator>();
   const weekly = new Map<string, Accumulator>();
