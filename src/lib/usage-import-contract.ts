@@ -171,7 +171,9 @@ export function parseUsageImportRecord(value: unknown): ParseUsageImportResult {
   try {
     if (!isObject(value)) fail("record must be a JSON object");
     if (value.contract !== USAGE_IMPORT_CONTRACT_VERSION) {
-      fail(`unsupported contract ${JSON.stringify(value.contract ?? null)}`);
+      // Only integer versions are echoed, so a rejected value never reaches logs.
+      const c = value.contract;
+      fail(`unsupported contract ${Number.isInteger(c) ? c : typeof c}`);
     }
     const source = id(value.source, "source");
     if (!SOURCE_PATTERN.test(source)) fail("source must be a lower-case source id");
