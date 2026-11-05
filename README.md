@@ -170,14 +170,14 @@ Start with this, then adjust the UI choices in the next section:
 
 All UI surfaces use the same quota data. Put these settings in `opencode-quota/quota-toast.json`, not `tui.json`.
 
-| UI surface                     | Config                                                                                    | Notes                                                                                                                                                                                                                                     |
-| ------------------------------ | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| Sidebar panel                  | `tuiSidebarPanel.enabled: true`                                                           | Full `Quota` panel in OpenCode's session sidebar. Requires the TUI plugin entry above.                                                                                                                                                    |
-| Toast                          | `enableToast: true`                                                                       | Popup toast after idle/question/compact events. Requires the server plugin entry above.                                                                                                                                                   |
-| Compact status line            | `tuiCompactStatus.enabled: true`                                                          | Short text-only quota line at the home bottom and chat/session prompt locations, for example `Copilot 94%                                                                                                                                 | OpenAI Pro 5h 100%, 7d 100%`. Requires the TUI plugin entry above. |
-| Maintainer announcement notice | `maintainerAnnouncements.enabled: true`, `maintainerAnnouncements.home: true`             | Prefers the TUI home notice when the quota TUI plugin is configured. Without the TUI plugin, shows the same count-only notice once after the first visible quota toast.                                                                   |
-| Web/desktop slash commands     | Server plugin entry in `opencode.json`                                                    | `/quota`, `/quota_status`, `/quota_announcements`, `/pricing_refresh`, and `/tokens_*` show deterministic ignored/no-reply output without calling the model.                                                                              |
-| Dialog slash commands          | TUI plugin entry in `tui.json`                                                            | The same commands open local TUI dialogs. They do not call the model and do not write command output to the OpenCode session transcript.                                                                                                  |
+| UI surface                     | Config                                                                                    | Notes                                                                                                                                                                                                                                    |
+| ------------------------------ | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Sidebar panel                  | `tuiSidebarPanel.enabled: true`                                                           | Full `Quota` panel in OpenCode's session sidebar. Requires the TUI plugin entry above.                                                                                                                                                   |
+| Toast                          | `enableToast: true`                                                                       | Popup toast after idle/question/compact events. Requires the server plugin entry above.                                                                                                                                                  |
+| Compact status line            | `tuiCompactStatus.enabled: true`                                                          | Short text-only quota line at the home bottom and chat/session prompt locations, for example `Copilot 94%                                                                                                                                | OpenAI Pro 5h 100%, 7d 100%`. Requires the TUI plugin entry above. |
+| Maintainer announcement notice | `maintainerAnnouncements.enabled: true`, `maintainerAnnouncements.home: true`             | Prefers the TUI home notice when the quota TUI plugin is configured. Without the TUI plugin, shows the same count-only notice once after the first visible quota toast.                                                                  |
+| Web/desktop slash commands     | Server plugin entry in `opencode.json`                                                    | `/quota`, `/quota_status`, `/quota_announcements`, `/pricing_refresh`, and `/tokens_*` show deterministic ignored/no-reply output without calling the model.                                                                             |
+| Dialog slash commands          | TUI plugin entry in `tui.json`                                                            | The same commands open local TUI dialogs. They do not call the model and do not write command output to the OpenCode session transcript.                                                                                                 |
 | No automatic UI surfaces       | `enableToast: false`, `tuiSidebarPanel.enabled: false`, `tuiCompactStatus.enabled: false` | Skips toast/sidebar/compact/TUI dialog surfaces while keeping server web/desktop slash commands and `token-watcher show` available. Maintainer announcements use the separate installer question/config and can be opted out if desired. |
 
 Selecting Compact status line in the installer enables both compact surfaces by default. To keep compact status home-only, set `tuiCompactStatus.sessionPrompt: false`.
@@ -193,23 +193,23 @@ Slash commands are deterministic and do not invoke a model. With the server plug
 > [!NOTE]
 > Web/desktop commands intentionally stop OpenCode continuation after injecting deterministic output. Until upstream has a clean command-cancel API, this can produce harmless popup/log noise; see anomalyco/opencode#18554 and anomalyco/opencode#18559.
 
-| Command                                        | What it shows                                                                                                                                                |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Command                                       | What it shows                                                                                                                                                |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `token-watcher show`                          | Terminal quota-only quick glance                                                                                                                             |
 | `token-watcher show --json`                   | Machine-readable JSON output for external tools                                                                                                              |
 | `token-watcher show --json --threshold <pct>` | Exit `1` if cached quota is below `<pct>%`; exit `2` if none can be compared                                                                                 |
-| `/quota`                                       | Detailed quota report                                                                                                                                        |
-| `/quota_status`                                | Config, provider, auth, pricing, `enabled`/`home` announcement config, `source=bundled_only`, `network=false`, and active/future/expired announcement counts |
-| `/quota_announcements`                         | List active bundled maintainer notices                                                                                                                       |
-| `/pricing_refresh`                             | Refresh local runtime pricing from `models.dev`                                                                                                              |
-| `/tokens_today`                                | Tokens used today                                                                                                                                            |
-| `/tokens_daily`                                | Tokens used in the last 24 hours                                                                                                                             |
-| `/tokens_weekly`                               | Tokens used in the last 7 days                                                                                                                               |
-| `/tokens_monthly`                              | Tokens used in the last 30 days, including pricing                                                                                                           |
-| `/tokens_all`                                  | Tokens used across all local history                                                                                                                         |
-| `/tokens_session`                              | Tokens used in the current session                                                                                                                           |
-| `/tokens_session_all`                          | Current session plus descendant sessions                                                                                                                     |
-| `/tokens_between`                              | Tokens used between `YYYY-MM-DD YYYY-MM-DD`                                                                                                                  |
+| `/quota`                                      | Detailed quota report                                                                                                                                        |
+| `/quota_status`                               | Config, provider, auth, pricing, `enabled`/`home` announcement config, `source=bundled_only`, `network=false`, and active/future/expired announcement counts |
+| `/quota_announcements`                        | List active bundled maintainer notices                                                                                                                       |
+| `/pricing_refresh`                            | Refresh local runtime pricing from `models.dev`                                                                                                              |
+| `/tokens_today`                               | Tokens used today                                                                                                                                            |
+| `/tokens_daily`                               | Tokens used in the last 24 hours                                                                                                                             |
+| `/tokens_weekly`                              | Tokens used in the last 7 days                                                                                                                               |
+| `/tokens_monthly`                             | Tokens used in the last 30 days, including pricing                                                                                                           |
+| `/tokens_all`                                 | Tokens used across all local history                                                                                                                         |
+| `/tokens_session`                             | Tokens used in the current session                                                                                                                           |
+| `/tokens_session_all`                         | Current session plus descendant sessions                                                                                                                     |
+| `/tokens_between`                             | Tokens used between `YYYY-MM-DD YYYY-MM-DD`                                                                                                                  |
 
 ## GUI Menubar App
 
@@ -314,10 +314,51 @@ ELECTRON_ARGS="--disable-gpu --enable-features=WaylandWindowDecorations" token-w
 | **Alerts**    | Configure budget thresholds (e.g. "alert when daily spend > $5 on OpenAI"). Per provider, per model, or global. Main evaluates each rolling window; the tray tooltip shows triggered/unknown counts. |
 | **Pricing**   | View the models.dev pricing snapshot. Add custom per-1M-token pricing overrides for any provider/model to correct missing or incorrect rates.                                                        |
 | **API Keys**  | Encrypted store for provider API keys (AES-256-GCM with PBKDF2 key derivation). Unlock with a master passphrase. Export/import encrypted bundles for cross-machine sharing.                          |
+| **History**   | Recorded quota observations and confirmed reset events.                                                                                                                                              |
+| **Sessions**  | The `token-watcher sessions` report for the last 7, 14, 28 or 90 days, with optional quota windows and Session Knowledge imports. See [Session usage analysis](#session-usage-analysis).             |
 
 Standalone refreshes also record **History**: successful percentage observations and actionable failures persist without an OpenCode toast. History is provider-wide with unknown account identity; existing reset history remains readable, while new resets require verified account/window continuity.
 
 History and budget evaluation use system Node with SQLite support (Node 22 built-in SQLite, or an older supported Node with optional `better-sqlite3`). If the helper/database is unavailable, quota display continues with a diagnostic. Budget day/week/month windows mean rolling 24h/7d/30d; unknown prices or failed reads show **Unknown**, including below-threshold rules. Existing WAL-mode history is left unchanged and reported unavailable for standalone writes.
+
+## Session usage analysis
+
+`token-watcher sessions` and the GUI **Sessions** tab show where coding-agent tokens went on this machine. They cover each session, weekly trends and session length, for Claude Code, OpenCode and Codex.
+
+```bash
+token-watcher sessions                    # last 28 days, top 10 sessions
+token-watcher sessions --since 7d --windows   # place usage on provider quota windows (5h, weekly, ...)
+token-watcher sessions import export.jsonl    # add Session Knowledge records
+token-watcher sessions --imports --json       # include imported activity and git-proxy outcomes
+```
+
+**Data it reads.** Everything is local and read-only, and no model is called.
+
+| Data                       | Location                                                                                               |
+| -------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Claude Code sessions       | `~/.claude/projects/`                                                                                  |
+| OpenCode sessions          | `opencode.db` in the OpenCode data directory (`~/.local/share/opencode/` by default)                   |
+| Codex sessions             | `$CODEX_HOME/sessions/` (`~/.codex/sessions/` by default)                                              |
+| Quota windows              | `quota-dashboard.db`, next to `opencode.db`; written by quota refreshes                                |
+| Session Knowledge imports  | `session-knowledge-imports.json`, next to `opencode.db`; override with `TOKEN_WATCHER_IMPORT_STORE`    |
+| Other machines (dashboard) | `opencode-quota/token-sync/` in the OpenCode config directory; override with `OPENCODE_QUOTA_SYNC_DIR` |
+
+**Privacy.**
+
+- Reports hold counts, model names, timestamps and working-directory names only, never prompts or messages.
+- The GUI shows only the last folder of each working directory.
+- Imports keep only the fields allowed by usage import contract 1, and drop titles and any other text. The import store is written with mode 0600.
+
+**Refresh.** The CLI reads the stores each time it runs. The GUI reads them when you open the tab, change the range or flip a toggle; it doesn't poll.
+
+**Limits.**
+
+- Counts are what each tool recorded, not billed or quota usage.
+- Cost covers only models in the pricing snapshot, and `n/a` means not available, never zero.
+- GitHub Copilot and Zcode record no tokens, so they appear only as activity from Session Knowledge imports.
+- Outcomes are commits and pull requests Session Knowledge linked to a session. They are a git proxy, not proof of delivered work.
+
+**Rollback.** Delete `session-knowledge-imports.json` to remove imported data. No report writes to the agents' own stores.
 
 ## API Key Management
 
@@ -376,30 +417,30 @@ Custom pricing is managed from the GUI **Pricing** tab or via `src/lib/user-pric
 
 Most providers work automatically. If a provider has a “Needs setup” link, open that setup note only if you use that provider.
 
-| Provider                 | Auth/setup                             | Source             | Reports         |
-| ------------------------ | -------------------------------------- | ------------------ | --------------- |
-| Anthropic (Claude)       | [Needs setup](#anthropic-claude)       | Local CLI/OAuth    | Usage/quota     |
-| GitHub Copilot           | OpenCode OAuth or PAT                  | Remote API         | Quota/usage     |
-| OpenAI                   | Automatic                              | Remote API         | Usage/quota     |
-| Cursor                   | [Needs setup](#cursor)                 | Local estimate     | Estimated quota |
-| Qwen Code                | [Needs setup](#qwen-code)              | Local estimate     | Estimated quota |
-| Alibaba Coding Plan      | OpenCode config                        | Local estimate     | Estimated quota |
-| MiniMax Coding Plan      | OpenCode config                        | Remote API         | Usage/quota     |
-| MiniMax Coding Plan (CN) | OpenCode config                        | Remote API         | Usage/quota     |
-| Kimi Code                | OpenCode config                        | Remote API         | Usage/quota     |
-| Chutes AI                | API key/config                         | Remote API         | Usage/quota     |
-| Synthetic                | Automatic                              | Remote API         | Quota           |
-| Google Antigravity       | [Needs setup](#google-antigravity)     | Remote API         | Usage/quota     |
-| Google AGY               | [Needs setup](#google-agy-quick-setup) | Remote API         | Usage/quota     |
-| Gemini CLI               | [Needs setup](#gemini-cli)             | Remote API         | Usage/quota     |
-| Z.ai Coding Plan         | OpenCode config                        | Remote API         | Usage/quota     |
-| Zhipu Coding Plan        | OpenCode config                        | Remote API         | Usage/quota     |
-| NanoGPT                  | API key/config                         | Remote APIs        | Usage + balance |
-| Kilo                     | Existing OpenCode auth, global config, or env | Remote APIs | Personal balance / Pass facts |
-| OpenRouter               | Existing OpenCode auth, global config, or env | Remote API | Key caps/spend |
-| DeepSeek                 | API key/config                         | Remote API         | Balance/status  |
-| Ollama Cloud             | [Needs setup](#ollama-cloud)           | Dashboard scraping | Dashboard usage |
-| OpenCode Go              | [Needs setup](#opencode-go)            | Dashboard scraping | Dashboard usage |
+| Provider                 | Auth/setup                                    | Source             | Reports                       |
+| ------------------------ | --------------------------------------------- | ------------------ | ----------------------------- |
+| Anthropic (Claude)       | [Needs setup](#anthropic-claude)              | Local CLI/OAuth    | Usage/quota                   |
+| GitHub Copilot           | OpenCode OAuth or PAT                         | Remote API         | Quota/usage                   |
+| OpenAI                   | Automatic                                     | Remote API         | Usage/quota                   |
+| Cursor                   | [Needs setup](#cursor)                        | Local estimate     | Estimated quota               |
+| Qwen Code                | [Needs setup](#qwen-code)                     | Local estimate     | Estimated quota               |
+| Alibaba Coding Plan      | OpenCode config                               | Local estimate     | Estimated quota               |
+| MiniMax Coding Plan      | OpenCode config                               | Remote API         | Usage/quota                   |
+| MiniMax Coding Plan (CN) | OpenCode config                               | Remote API         | Usage/quota                   |
+| Kimi Code                | OpenCode config                               | Remote API         | Usage/quota                   |
+| Chutes AI                | API key/config                                | Remote API         | Usage/quota                   |
+| Synthetic                | Automatic                                     | Remote API         | Quota                         |
+| Google Antigravity       | [Needs setup](#google-antigravity)            | Remote API         | Usage/quota                   |
+| Google AGY               | [Needs setup](#google-agy-quick-setup)        | Remote API         | Usage/quota                   |
+| Gemini CLI               | [Needs setup](#gemini-cli)                    | Remote API         | Usage/quota                   |
+| Z.ai Coding Plan         | OpenCode config                               | Remote API         | Usage/quota                   |
+| Zhipu Coding Plan        | OpenCode config                               | Remote API         | Usage/quota                   |
+| NanoGPT                  | API key/config                                | Remote APIs        | Usage + balance               |
+| Kilo                     | Existing OpenCode auth, global config, or env | Remote APIs        | Personal balance / Pass facts |
+| OpenRouter               | Existing OpenCode auth, global config, or env | Remote API         | Key caps/spend                |
+| DeepSeek                 | API key/config                                | Remote API         | Balance/status                |
+| Ollama Cloud             | [Needs setup](#ollama-cloud)                  | Dashboard scraping | Dashboard usage               |
+| OpenCode Go              | [Needs setup](#opencode-go)                   | Dashboard scraping | Dashboard usage               |
 
 ### Custom remote quota sources
 
@@ -575,7 +616,7 @@ Existing `experimental.quotaToast` settings still work when no sidecar file exis
 | `requestTimeoutMs`            | `5000`         | Remote provider request timeout in milliseconds.                                                                                                                                                                                                                                                   |
 | `formatStyle`                 | `singleWindow` | Shared quota reset-period display for popup toasts, the Sidebar panel, and Compact status line unless a TUI surface override is set: `singleWindow` shows one reset period per provider; `allWindows` shows all reset periods per provider. Legacy `classic`/`grouped` aliases are still accepted. |
 | `percentDisplayMode`          | `remaining`    | Shared quota percentage meaning for popup toasts, the Sidebar panel, and `/quota`: `remaining` shows quota left; `used` shows quota consumed.                                                                                                                                                      |
-| `quotaProjection` | `none` | Opt-in `runway` shows an approximate linear average only for rows with explicit fixed-window evidence; zero/unknown usage and unsupported windows have no estimate. |
+| `quotaProjection`             | `none`         | Opt-in `runway` shows an approximate linear average only for rows with explicit fixed-window evidence; zero/unknown usage and unsupported windows have no estimate.                                                                                                                                |
 | `onlyCurrentModel`            | `false`        | Filter quota rows to the current model/provider when that session selection can be resolved.                                                                                                                                                                                                       |
 | `showSessionTokens`           | `true`         | Show the `Session input/output tokens` section when session token data is available. When cached input is present, the section keeps the legacy `in/out` layout and appends cached input in parentheses next to the input amount.                                                                  |
 | `pricingSnapshot.source`      | `"auto"`       | Token pricing snapshot selection for `/tokens_*`: `auto`, `bundled`, or `runtime`.                                                                                                                                                                                                                 |
@@ -583,19 +624,19 @@ Existing `experimental.quotaToast` settings still work when no sidecar file exis
 
 ### Toast settings
 
-| Option            | Default | Meaning                                                                                       |
-| ----------------- | ------- | --------------------------------------------------------------------------------------------- |
-| `enableToast`     | `true`  | Show popup toasts. Disabling this does not disable terminal checks, UI surfaces, or `/quota`. |
+| Option               | Default                                                      | Meaning                                                                                                                                                              |
+| -------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enableToast`        | `true`                                                       | Show popup toasts. Disabling this does not disable terminal checks, UI surfaces, or `/quota`.                                                                        |
 | `resetNotifications` | `{ "enabled": false, "watched": [], "preferDesktop": true }` | Opt-in reset notices require explicit provider/window watches. See the [delivery configuration and platform limits](docs/work-items/INS02_NOTIFICATION_DELIVERY.md). |
-| `toastDurationMs` | `9000`  | Toast duration in milliseconds.                                                               |
-| `showOnIdle`      | `true`  | Show a toast on the idle trigger.                                                             |
-| `showOnQuestion`  | `true`  | Show a toast after a question/assistant response.                                             |
-| `showOnCompact`   | `true`  | Show a toast after session compaction.                                                        |
-| `showOnBothFail`  | `true`  | Show a fallback toast when providers attempted quota reads and all failed.                    |
-| `layout.maxWidth` | `50`    | Toast formatting width target.                                                                |
-| `layout.narrowAt` | `42`    | Toast compact-layout breakpoint.                                                              |
-| `layout.tinyAt`   | `32`    | Toast tiny-layout breakpoint.                                                                 |
-| `debug`           | `false` | Append toast debug context when troubleshooting.                                              |
+| `toastDurationMs`    | `9000`                                                       | Toast duration in milliseconds.                                                                                                                                      |
+| `showOnIdle`         | `true`                                                       | Show a toast on the idle trigger.                                                                                                                                    |
+| `showOnQuestion`     | `true`                                                       | Show a toast after a question/assistant response.                                                                                                                    |
+| `showOnCompact`      | `true`                                                       | Show a toast after session compaction.                                                                                                                               |
+| `showOnBothFail`     | `true`                                                       | Show a fallback toast when providers attempted quota reads and all failed.                                                                                           |
+| `layout.maxWidth`    | `50`                                                         | Toast formatting width target.                                                                                                                                       |
+| `layout.narrowAt`    | `42`                                                         | Toast compact-layout breakpoint.                                                                                                                                     |
+| `layout.tinyAt`      | `32`                                                         | Toast tiny-layout breakpoint.                                                                                                                                        |
+| `debug`              | `false`                                                      | Append toast debug context when troubleshooting.                                                                                                                     |
 
 ### TUI settings
 
@@ -1010,18 +1051,18 @@ Start here when quota or token data looks wrong.
 
 ### Common symptoms
 
-| Symptom                                                | Try this                                                                                                                                                                                                                                                 |
-| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Symptom                                                | Try this                                                                                                                                                                                                                                                |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/quota` or other slash commands do not appear         | For web/desktop commands, confirm `opencode.json` includes `@thanhndv212/token-watcher`. For local TUI dialogs, confirm `tui.json` includes it. Restart OpenCode after changes.                                                                         |
 | `/quota` shows no providers                            | Run `/quota_status`, then check provider detection and auth. You can also use `token-watcher show` for a terminal quota summary.                                                                                                                        |
 | Sidebar panel does not appear                          | Confirm `tui.json` includes `@thanhndv212/token-watcher`, restart OpenCode, and check `tuiSidebarPanel.enabled`.                                                                                                                                        |
 | Compact status line does not appear anywhere           | Confirm `tui.json` includes `@thanhndv212/token-watcher`, restart OpenCode, check `tuiCompactStatus.enabled`, and check whether `tuiCompactStatus.suppressWhenNativeProviderQuota` is hiding it because OpenCode exposes native provider-quota support. |
-| Compact status appears on home but not in chat/session | Check `tuiCompactStatus.sessionPrompt`; set it to `true` to show the chat/session prompt line.                                                                                                                                                           |
-| Popup toasts do not appear                             | Check `enableToast`, `showOnIdle`, `showOnQuestion`, and `showOnCompact`.                                                                                                                                                                                |
+| Compact status appears on home but not in chat/session | Check `tuiCompactStatus.sessionPrompt`; set it to `true` to show the chat/session prompt line.                                                                                                                                                          |
+| Popup toasts do not appear                             | Check `enableToast`, `showOnIdle`, `showOnQuestion`, and `showOnCompact`.                                                                                                                                                                               |
 | Announcement home notice does not appear               | Confirm `tui.json` includes `@thanhndv212/token-watcher`, restart OpenCode, then check `maintainerAnnouncements.enabled`, `maintainerAnnouncements.home`, and the active count in the `maintainer_announcements` section of `/quota_status`.            |
-| Token reports are empty                                | Start OpenCode once so `opencode.db` exists, then run a session with model usage.                                                                                                                                                                        |
-| Pricing looks stale                                    | Run `/pricing_refresh`.                                                                                                                                                                                                                                  |
-| `/tokens_between` needs dates                          | Run `/tokens_between YYYY-MM-DD YYYY-MM-DD`; if your OpenCode build does not pass slash arguments to TUI commands, the dialog shows the expected format.                                                                                                 |
+| Token reports are empty                                | Start OpenCode once so `opencode.db` exists, then run a session with model usage.                                                                                                                                                                       |
+| Pricing looks stale                                    | Run `/pricing_refresh`.                                                                                                                                                                                                                                 |
+| `/tokens_between` needs dates                          | Run `/tokens_between YYYY-MM-DD YYYY-MM-DD`; if your OpenCode build does not pass slash arguments to TUI commands, the dialog shows the expected format.                                                                                                |
 
 ### Provider troubleshooting
 
@@ -1073,7 +1114,7 @@ Run `/quota_status` and check the Cursor section.
 
 | Symptom                                   | Fix                                                                                                     |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Cursor not detected                       | Put `@playwo/opencode-cursor-oauth` before `@thanhndv212/token-watcher` in `opencode.json`.            |
+| Cursor not detected                       | Put `@playwo/opencode-cursor-oauth` before `@thanhndv212/token-watcher` in `opencode.json`.             |
 | Cursor auth missing                       | Run `opencode auth login --provider cursor`.                                                            |
 | Quota appears but no remaining percentage | Set `cursorPlan` or `cursorIncludedApiUsd` in `opencode-quota/quota-toast.json`.                        |
 | Billing cycle looks wrong                 | Set `cursorBillingCycleStartDay` in `opencode-quota/quota-toast.json` to your local billing anchor day. |
@@ -1088,7 +1129,7 @@ Run `/quota_status` and check `qwen_oauth_source`, `qwen_local_plan`, and the `q
 
 | Symptom              | Fix                                                                                                          |
 | -------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Qwen not detected    | Put `opencode-qwencode-auth` before `@thanhndv212/token-watcher` in `opencode.json`.                        |
+| Qwen not detected    | Put `opencode-qwencode-auth` before `@thanhndv212/token-watcher` in `opencode.json`.                         |
 | Auth missing         | Complete the Qwen companion plugin auth flow.                                                                |
 | Counters do not move | Confirm the current model is `qwen-code/*`; Qwen quota is local request estimation for matching model usage. |
 | Usage looks stale    | Check the local state file path shown by `/quota_status`.                                                    |
@@ -1135,12 +1176,12 @@ For security, repo-local `opencode.json` / `opencode.jsonc` is ignored for provi
 
 Run `/quota_status` and check the `google_antigravity` section.
 
-| Symptom                  | Fix                                                                                      |
-| ------------------------ | ---------------------------------------------------------------------------------------- |
+| Symptom                  | Fix                                                                                     |
+| ------------------------ | --------------------------------------------------------------------------------------- |
 | Companion missing        | Put `opencode-antigravity-auth` before `@thanhndv212/token-watcher` in `opencode.json`. |
-| Accounts not found       | Check the selected `antigravity-accounts.json` path shown by `/quota_status`.            |
-| Refresh tokens invalid   | Re-authenticate with the companion plugin.                                               |
-| Provider returns no rows | Check `live_probe`, `live_entry_*`, and `live_error_*` in `/quota_status`.               |
+| Accounts not found       | Check the selected `antigravity-accounts.json` path shown by `/quota_status`.           |
+| Refresh tokens invalid   | Re-authenticate with the companion plugin.                                              |
+| Provider returns no rows | Check `live_probe`, `live_entry_*`, and `live_error_*` in `/quota_status`.              |
 
 </details>
 
@@ -1149,13 +1190,13 @@ Run `/quota_status` and check the `google_antigravity` section.
 
 Run `/quota_status` and check the `google_agy` section.
 
-| Symptom                             | Fix                                                                                               |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Symptom                             | Fix                                                                                              |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------ |
 | Companion missing                   | Put `@anthonyhaussman/opencode-agy-auth` before `@thanhndv212/token-watcher` in `opencode.json`. |
-| Provider not enabled in manual mode | Include `google-agy` in `enabledProviders` in `opencode-quota/quota-toast.json`.                  |
-| Auth missing                        | Run `opencode auth login --provider google-agy`.                                                  |
-| Project missing                     | Set `OPENCODE_AGY_PROJECT_ID` or `provider.google-agy.options.projectId`.                         |
-| Provider returns no rows            | Check `live_probe`, `live_entry_*`, and `live_error_*` in `/quota_status`.                        |
+| Provider not enabled in manual mode | Include `google-agy` in `enabledProviders` in `opencode-quota/quota-toast.json`.                 |
+| Auth missing                        | Run `opencode auth login --provider google-agy`.                                                 |
+| Project missing                     | Set `OPENCODE_AGY_PROJECT_ID` or `provider.google-agy.options.projectId`.                        |
+| Provider returns no rows            | Check `live_probe`, `live_entry_*`, and `live_error_*` in `/quota_status`.                       |
 
 </details>
 
@@ -1166,7 +1207,7 @@ Run `/quota_status` and check the Gemini CLI live probe rows.
 
 | Symptom                             | Fix                                                                                                                          |
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Companion missing                   | Put `opencode-gemini-auth` before `@thanhndv212/token-watcher` in `opencode.json`.                                          |
+| Companion missing                   | Put `opencode-gemini-auth` before `@thanhndv212/token-watcher` in `opencode.json`.                                           |
 | Provider not enabled in manual mode | Include `google-gemini-cli` in `enabledProviders` in `opencode-quota/quota-toast.json`.                                      |
 | Auth missing                        | Run `opencode auth login --provider google`.                                                                                 |
 | Project missing                     | Set `provider.google.options.projectId`, `OPENCODE_GEMINI_PROJECT_ID`, `GOOGLE_CLOUD_PROJECT`, or `GOOGLE_CLOUD_PROJECT_ID`. |

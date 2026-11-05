@@ -46,6 +46,7 @@ These are the completed items with dedicated records. Other completed items have
 - [UA-TW-04 Session Knowledge import record](work-items/UA_TW04_SESSION_KNOWLEDGE_IMPORT.md): complete on the Token Watcher side against fixtures; `token-watcher sessions import` and `--imports` show activity-only sources and git-proxy outcomes.
 - [UA-TW-05 quota window usage record](work-items/UA_TW05_QUOTA_WINDOW_USAGE.md): complete; `token-watcher sessions --windows` places session tokens on recorded provider quota windows.
 - [UA-TW-06 cross-machine sync record](work-items/UA_TW06_CROSS_MACHINE_SYNC.md): complete; `token-sync` format version 3 carries Claude Code, OpenCode and Codex sessions per machine id and counts each session once.
+- [UA-TW-07 GUI session views record](work-items/UA_TW07_GUI_SESSION_VIEWS.md): complete; desktop Sessions tab, packaged-app acceptance and README data locations, privacy, limits and rollback.
 
 - [CUS-02 durable local estimate record](work-items/CUS02_DURABLE_LOCAL_ESTIMATES.md): complete in PR #55 with green main CI; native journal, pricing coverage and installed CLI/Electron evidence.
 
