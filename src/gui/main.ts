@@ -47,6 +47,7 @@ import { fixGuiProcessPath } from "../lib/fix-gui-path.js";
 // IPC handlers
 import * as quotaIpc from "./ipc/quota.js";
 import * as tokensIpc from "./ipc/tokens.js";
+import * as sessionsIpc from "./ipc/sessions.js";
 import * as pricingIpc from "./ipc/pricing.js";
 import * as alertsIpc from "./ipc/alerts.js";
 import * as apikeysIpc from "./ipc/apikeys.js";
@@ -291,6 +292,11 @@ function registerIpcHandlers(initialConfig: StandaloneQuotaConfig, guiConfig: Gu
 
   ipcMain.handle("tokens:merged", async () => {
     return tokensIpc.loadMergedUsage();
+  });
+
+  // ── Session usage (UA-TW-07) ───────────────────────
+  ipcMain.handle("sessions:report", async (_event, params: unknown) => {
+    return sessionsIpc.querySessionView(params);
   });
 
   // ── Pricing ────────────────────────────────────────

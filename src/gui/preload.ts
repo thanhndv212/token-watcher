@@ -40,6 +40,12 @@ const quotaApi = {
     merged: () => ipcRenderer.invoke("tokens:merged"),
   },
 
+  // ── Session usage ──────────────────────────────────
+  sessions: {
+    report: (params: { days: number; windows: boolean; imports: boolean }) =>
+      ipcRenderer.invoke("sessions:report", params),
+  },
+
   // ── Pricing ────────────────────────────────────────────
   pricing: {
     list: () => ipcRenderer.invoke("pricing:list"),
