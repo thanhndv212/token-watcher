@@ -28,6 +28,13 @@ import { getCodexCliSessionsDir, iterCodexCliMessages } from "./codex-cli-storag
 import { resolveMachineIdentity, type MachineIdentity } from "./machine-identity.js";
 import { priceTokensUsd } from "./quota-stats.js";
 import {
+  placeUsageOnQuotaWindows,
+  readQuotaWindowObservations,
+  windowsInRange,
+  type QuotaWindowObservation,
+  type QuotaWindowUsage,
+} from "./quota-window-usage.js";
+import {
   addTokenBuckets,
   emptyTokenBuckets,
   tokenBucketsFromMessage,
@@ -121,6 +128,8 @@ export type SessionUsageReport = {
   weekly: WeeklyUsageRow[];
   lengthBuckets: LengthBucketRow[];
   sessions: SessionUsageRow[];
+  /** Usage placed on recorded quota windows; null unless requested. */
+  quotaWindows: QuotaWindowUsage | null;
 };
 
 export type SessionUsageDeps = {
@@ -131,6 +140,8 @@ export type SessionUsageDeps = {
   storeExists: (source: SessionUsageSource) => boolean;
   price: (p: { providerID?: string; modelID?: string; tokens: TokenBuckets }) => number | null;
   machine: () => MachineIdentity;
+  /** Recorded quota limits; null when there is no history database. */
+  readQuotaWindows: (p: { sinceMs?: number }) => Promise<QuotaWindowObservation[] | null>;
 };
 
 const defaultDeps: SessionUsageDeps = {
@@ -149,6 +160,7 @@ const defaultDeps: SessionUsageDeps = {
   },
   price: priceTokensUsd,
   machine: () => resolveMachineIdentity(),
+  readQuotaWindows: (p) => readQuotaWindowObservations(p),
 };
 
 export const SESSION_USAGE_NOTES = [
@@ -271,6 +283,8 @@ export async function buildSessionUsageReport(
     sinceMs?: number;
     untilMs?: number;
     nowMs?: number;
+    /** Also place responses on recorded provider quota windows (UA-TW-05). */
+    quotaWindows?: boolean;
   } = {},
   deps: Partial<SessionUsageDeps> = {},
 ): Promise<SessionUsageReport> {
@@ -509,6 +523,41 @@ export async function buildSessionUsageReport(
         scopeOrder(a.source) - scopeOrder(b.source),
     );
 
+  let quotaWindows: QuotaWindowUsage | null = null;
+  if (params.quotaWindows) {
+    try {
+      const observations = await d.readQuotaWindows({ sinceMs: params.sinceMs });
+      if (observations === null) {
+        quotaWindows = { status: "not-found", windows: [], unattributed: [] };
+      } else {
+        const placed = placeUsageOnQuotaWindows(
+          observations,
+          tagged.map((t) => {
+            const created = t.message.time?.created;
+            return {
+              providerID: t.message.providerID ?? null,
+              createdMs: typeof created === "number" && Number.isFinite(created) ? created : null,
+              sessionKey: `${t.source}\u0000${t.rootID}`,
+              source: t.source,
+              totalTokens: totalTokenBuckets(tokenBucketsFromMessage(t.message)),
+            };
+          }),
+        );
+        quotaWindows = {
+          status: "read",
+          ...windowsInRange(placed, params.sinceMs, params.untilMs),
+        };
+      }
+    } catch (error) {
+      quotaWindows = {
+        status: "unavailable",
+        reason: errorReason(error),
+        windows: [],
+        unattributed: [],
+      };
+    }
+  }
+
   return {
     generatedAtMs: params.nowMs ?? Date.now(),
     machine: d.machine(),
@@ -520,5 +569,6 @@ export async function buildSessionUsageReport(
     weekly: weeklyRows,
     lengthBuckets: bucketRows,
     sessions: rows,
+    quotaWindows,
   };
 }

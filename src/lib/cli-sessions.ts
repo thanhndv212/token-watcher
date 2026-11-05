@@ -1,6 +1,7 @@
 import { basename } from "path";
 
 import { describeMachineIdentity } from "./machine-identity.js";
+import type { QuotaWindowRow, QuotaWindowUsage, UnattributedReason } from "./quota-window-usage.js";
 import {
   buildSessionUsageReport,
   type SessionUsageDeps,
@@ -23,7 +24,7 @@ const DEFAULT_LIMIT = 10;
 export const SESSIONS_USAGE = [
   "Usage:",
   "  npx @thanhndv212/token-watcher sessions [--since <YYYY-MM-DD|Nd>] [--until <YYYY-MM-DD>]",
-  "                                         [--limit <n>] [--json]",
+  "                                         [--limit <n>] [--windows] [--json]",
   "",
   "Per-session token usage from Claude Code, OpenCode and Codex on this machine,",
   "with weekly trends and session-length buckets. Local and read-only.",
@@ -32,12 +33,21 @@ export const SESSIONS_USAGE = [
   `  --since <date|Nd>  Start of the window, a UTC date or N days ago (default: ${DEFAULT_DAYS}d)`,
   "  --until <date>     End of the window, inclusive UTC date (default: now)",
   `  --limit <n>        Sessions to list in text output (default: ${DEFAULT_LIMIT})`,
+  "  --windows          Also place usage on recorded provider quota windows (5h, weekly, ...)",
   "  --json             Print the full report as JSON",
   "  --help, -h         Show help",
 ].join("\n");
 
 type ParsedSessionsArgs =
-  | { ok: true; help: boolean; json: boolean; sinceMs: number; untilMs?: number; limit: number }
+  | {
+      ok: true;
+      help: boolean;
+      json: boolean;
+      windows: boolean;
+      sinceMs: number;
+      untilMs?: number;
+      limit: number;
+    }
   | { ok: false; error: string };
 
 function parseUtcDate(value: string): number | null {
@@ -48,6 +58,7 @@ function parseUtcDate(value: string): number | null {
 
 export function parseSessionsArgs(argv: string[], nowMs: number): ParsedSessionsArgs {
   let json = false;
+  let windows = false;
   let sinceMs = nowMs - DEFAULT_DAYS * DAY_MS;
   let untilMs: number | undefined;
   let limit = DEFAULT_LIMIT;
@@ -55,10 +66,14 @@ export function parseSessionsArgs(argv: string[], nowMs: number): ParsedSessions
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]!;
     if (arg === "--help" || arg === "-h") {
-      return { ok: true, help: true, json: false, sinceMs, limit };
+      return { ok: true, help: true, json: false, windows: false, sinceMs, limit };
     }
     if (arg === "--json") {
       json = true;
+      continue;
+    }
+    if (arg === "--windows") {
+      windows = true;
       continue;
     }
 
@@ -102,7 +117,7 @@ export function parseSessionsArgs(argv: string[], nowMs: number): ParsedSessions
   if (untilMs !== undefined && untilMs < sinceMs) {
     return { ok: false, error: "--until is before --since." };
   }
-  return { ok: true, help: false, json, sinceMs, untilMs, limit };
+  return { ok: true, help: false, json, windows, sinceMs, untilMs, limit };
 }
 
 const NA = "n/a";
@@ -168,6 +183,99 @@ const SUMMARY_HEADER = [
 
 function isoDate(ms: number | null): string {
   return ms === null ? "start" : new Date(ms).toISOString().slice(0, 10);
+}
+
+const UNATTRIBUTED_LABELS: Record<UnattributedReason, string> = {
+  "no-window": "no quota window recorded for this provider",
+  "outside-known-windows": "outside every recorded window",
+  "ambiguous-account": "windows from more than one account cover it",
+  "no-provider-or-time": "no provider id or timestamp",
+};
+
+function utcMinute(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 16).replace("T", " ");
+}
+
+/**
+ * Windows with usage, mixed-account windows (so the reason usage is not placed
+ * shows), and the latest instance of each limit so current windows show.
+ */
+function shownWindows(windows: QuotaWindowRow[]): QuotaWindowRow[] {
+  const latest = new Map<string, QuotaWindowRow>();
+  for (const w of windows) {
+    const key = [w.provider, w.account, w.window, w.group, w.model ?? ""].join("\u0000");
+    const current = latest.get(key);
+    if (!current || w.endMs > current.endMs) latest.set(key, w);
+  }
+  const keep = new Set(latest.values());
+  return windows.filter((w) => w.responses > 0 || w.concurrent || keep.has(w));
+}
+
+export function formatQuotaWindowLines(usage: QuotaWindowUsage): string[] {
+  const lines: string[] = ["Quota windows (UTC):"];
+  if (usage.status === "not-found") {
+    lines.push("  No quota history recorded on this machine yet.", "");
+    return lines;
+  }
+  if (usage.status === "unavailable") {
+    lines.push(`  Quota history unavailable: ${usage.reason ?? "read failed"}`, "");
+    return lines;
+  }
+  const shown = shownWindows(usage.windows);
+  if (shown.length === 0) {
+    lines.push("  No recorded quota windows overlap this range.");
+  } else {
+    const accounts = new Set(shown.map((w) => `${w.provider}\u0000${w.account}`));
+    const providers = new Set(shown.map((w) => w.provider));
+    const showAccount = accounts.size > providers.size;
+    lines.push(
+      ...table(
+        [
+          "provider",
+          ...(showAccount ? ["account"] : []),
+          "window",
+          "start",
+          "reset",
+          "used",
+          "sessions",
+          "resp",
+          "tokens",
+        ],
+        shown.map((w) => [
+          w.provider,
+          ...(showAccount ? [w.account.slice(0, 8)] : []),
+          w.model ? `${w.window} ${w.model}` : w.window,
+          `${utcMinute(w.startMs)}${w.startMethod === "first-observation" ? "+" : ""}`,
+          utcMinute(w.endMs),
+          (w.percentUsed === null ? NA : `${Math.round(w.percentUsed)}%`) +
+            (w.concurrent ? "?" : ""),
+          String(w.sessions),
+          String(w.responses),
+          formatTokens(w.totalTokens),
+        ]),
+      ),
+    );
+    if (shown.some((w) => w.startMethod === "first-observation")) {
+      lines.push("  + start is the first observation; the window may have started earlier.");
+    }
+    if (shown.some((w) => w.concurrent)) {
+      lines.push(
+        "  ? observed alongside another window of the same limit: more than one account,",
+        "    not told apart, so usage in it is not placed.",
+      );
+    }
+  }
+  if (usage.unattributed.length > 0) {
+    lines.push("Not placed on a window:");
+    for (const u of usage.unattributed) {
+      const scope = [u.provider ?? "unknown provider", u.window].filter(Boolean).join(" ");
+      lines.push(
+        `  ${scope}: ${u.responses} responses, ${formatTokens(u.totalTokens)} tokens (${UNATTRIBUTED_LABELS[u.reason]})`,
+      );
+    }
+  }
+  lines.push("");
+  return lines;
 }
 
 export function formatSessionUsageText(report: SessionUsageReport, limit: number): string {
@@ -254,6 +362,8 @@ export function formatSessionUsageText(report: SessionUsageReport, limit: number
     }
   }
 
+  if (report.quotaWindows) lines.push(...formatQuotaWindowLines(report.quotaWindows));
+
   lines.push("Notes:");
   for (const note of report.notes) lines.push(`  - ${note}`);
   lines.push(`  - ${NA} means the value is not available, not zero.`);
@@ -281,7 +391,7 @@ export async function runCliSessionsCommand(
   }
 
   const report = await buildSessionUsageReport(
-    { sinceMs: parsed.sinceMs, untilMs: parsed.untilMs, nowMs },
+    { sinceMs: parsed.sinceMs, untilMs: parsed.untilMs, nowMs, quotaWindows: parsed.windows },
     options.deps,
   );
   stdout.write(

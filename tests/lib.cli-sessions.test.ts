@@ -44,7 +44,9 @@ describe("parseSessionsArgs", () => {
       sinceMs: NOW - 28 * DAY,
       untilMs: undefined,
       limit: 10,
+      windows: false,
     });
+    expect(parseSessionsArgs(["--windows"], NOW)).toMatchObject({ ok: true, windows: true });
   });
 
   it("accepts dates, day counts and inline values", () => {
@@ -119,6 +121,66 @@ describe("runCliSessionsCommand", () => {
       "not-found",
       "read",
     ]);
+  });
+
+  it("prints quota windows with --windows, marking mixed accounts and unplaced usage", async () => {
+    const out = capture();
+    const at = (iso: string) => Date.parse(iso);
+    await runCliSessionsCommand({
+      argv: ["--windows", "--limit", "0"],
+      nowMs: NOW,
+      deps: {
+        ...deps,
+        readQuotaWindows: async () => [
+          {
+            provider: "anthropic",
+            account: "unknown",
+            kind: "5h:",
+            group: "Claude",
+            model: null,
+            observedAtMs: at("2026-10-13T08:00:00Z"),
+            resetsAtMs: at("2026-10-13T12:00:00Z"),
+            percentUsed: 61,
+          },
+          ...[
+            ["2026-10-13T00:00:00Z", "2026-10-17T00:00:00Z"],
+            ["2026-10-13T01:00:00Z", "2026-10-18T00:00:00Z"],
+            ["2026-10-13T02:00:00Z", "2026-10-17T00:00:00Z"],
+          ].map(([observed, reset]) => ({
+            provider: "anthropic",
+            account: "unknown",
+            kind: "Weekly:",
+            group: "Claude",
+            model: null,
+            observedAtMs: at(observed!),
+            resetsAtMs: at(reset!),
+            percentUsed: 30,
+          })),
+        ],
+      },
+      stdout: out.stream,
+    });
+    const text = out.read();
+    expect(text).toContain("Quota windows (UTC):");
+    expect(text).toMatch(
+      /anthropic\s+5h\s+2026-10-13 07:00\s+2026-10-13 12:00\s+61%\s+1\s+1\s+2\.0k/,
+    );
+    expect(text).toMatch(/anthropic\s+weekly\s+.*30%\?/);
+    expect(text).toContain("more than one account");
+    expect(text).toContain(
+      "anthropic weekly: 1 responses, 2.0k tokens (windows from more than one account cover it)",
+    );
+  });
+
+  it("says so when no quota history is recorded", async () => {
+    const out = capture();
+    await runCliSessionsCommand({
+      argv: ["--windows"],
+      nowMs: NOW,
+      deps: { ...deps, readQuotaWindows: async () => null },
+      stdout: out.stream,
+    });
+    expect(out.read()).toContain("No quota history recorded on this machine yet.");
   });
 
   it("exits 1 with usage on a bad option", async () => {
