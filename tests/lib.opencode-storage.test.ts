@@ -11,10 +11,12 @@ const sqliteMocks = vi.hoisted(() => ({
 
 const claudeMocks = vi.hoisted(() => ({
   iterClaudeCodeCliMessages: vi.fn(async (): Promise<OpenCodeMessage[]> => []),
+  getClaudeCodeCliProjectsDir: vi.fn(() => "/tmp/claude-projects"),
 }));
 vi.mock("../src/lib/claude-code-cli-storage.js", () => claudeMocks);
 vi.mock("../src/lib/codex-cli-storage.js", () => ({
   iterCodexCliMessages: vi.fn(async (): Promise<OpenCodeMessage[]> => []),
+  getCodexCliSessionsDir: vi.fn(() => "/tmp/codex-sessions"),
 }));
 
 vi.mock("fs", async (importOriginal) => {
@@ -162,9 +164,27 @@ describe("forked session usage", () => {
       JSON.stringify(exported, null, 2),
       "utf-8",
     );
+    // Version 3 is written beside version 2, per root session and model.
+    const v3Call = (writes.writeFile.mock.calls as unknown as [string, string][]).find(([path]) =>
+      path.endsWith(".v3.json"),
+    );
+    expect(v3Call).toBeDefined();
+    const v3 = JSON.parse(v3Call![1]);
+    expect(v3).toMatchObject({ version: 3, sources: expect.any(Array) });
+    expect(
+      v3.sessions.map((s: { s: string; id: string; m: Record<string, { i: number }> }) => [
+        s.s,
+        s.id,
+        s.m["openai/gpt-4o"]!.i,
+      ]),
+    ).toEqual([
+      ["opencode", "ses_fork", 1000],
+      ["opencode", "ses_parent", 1000],
+    ]);
     const merged = await loadMergedTokenUsage();
     expect(merged.totals.tokens.input).toBe(2000);
     expect(merged.totals.messages).toBe(2);
+    expect(merged.machines).toEqual([]);
   });
 
   it("corrects global aggregation while leaving the separate Claude CLI source intact", async () => {

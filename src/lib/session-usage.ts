@@ -166,7 +166,7 @@ const defaultDeps: SessionUsageDeps = {
 export const SESSION_USAGE_NOTES = [
   "Counts are what each source reported on this machine, not billed or quota usage.",
   "Cost is estimated from the bundled or user pricing snapshot and covers only the priced share of tokens.",
-  "Other machines are not included yet (UA-TW-06).",
+  "Other machines are not included here; the dashboard's All machines view merges token-sync exports (UA-TW-06).",
   "GitHub Copilot and Zcode record no token counts and are not included (UA-TW-04).",
   "Sessions crossing the window edge only count responses inside the window.",
 ];
@@ -249,7 +249,7 @@ function openCodeRoot(sessionID: string, index: Record<string, OpenCodeSessionIn
   }
 }
 
-type TaggedMessage = {
+export type TaggedMessage = {
   source: SessionUsageSource;
   rootID: string;
   subagent: boolean;
@@ -278,18 +278,15 @@ type SessionAccumulator = {
   unpricedTokens: number;
 };
 
-export async function buildSessionUsageReport(
-  params: {
-    sinceMs?: number;
-    untilMs?: number;
-    nowMs?: number;
-    /** Also place responses on recorded provider quota windows (UA-TW-05). */
-    quotaWindows?: boolean;
-  } = {},
+/**
+ * Reads every native source and tags each response with its root session.
+ * Shared by the session report and cross-machine sync (UA-TW-06).
+ */
+export async function loadSessionMessages(
+  window: { sinceMs?: number; untilMs?: number } = {},
   deps: Partial<SessionUsageDeps> = {},
-): Promise<SessionUsageReport> {
+): Promise<{ coverage: Map<SessionUsageSource, SourceCoverage>; tagged: TaggedMessage[] }> {
   const d: SessionUsageDeps = { ...defaultDeps, ...deps };
-  const window = { sinceMs: params.sinceMs, untilMs: params.untilMs };
 
   const coverage = new Map<SessionUsageSource, SourceCoverage>();
   const tagged: TaggedMessage[] = [];
@@ -355,6 +352,24 @@ export async function buildSessionUsageReport(
   for (const t of tagged) {
     if (t.message.subagent !== undefined) coverage.get(t.source)!.marksSubagents = true;
   }
+  return { coverage, tagged };
+}
+
+export async function buildSessionUsageReport(
+  params: {
+    sinceMs?: number;
+    untilMs?: number;
+    nowMs?: number;
+    /** Also place responses on recorded provider quota windows (UA-TW-05). */
+    quotaWindows?: boolean;
+  } = {},
+  deps: Partial<SessionUsageDeps> = {},
+): Promise<SessionUsageReport> {
+  const d: SessionUsageDeps = { ...defaultDeps, ...deps };
+  const { coverage, tagged } = await loadSessionMessages(
+    { sinceMs: params.sinceMs, untilMs: params.untilMs },
+    deps,
+  );
 
   const sessions = new Map<string, SessionAccumulator>();
   const weekly = new Map<string, Accumulator>();
