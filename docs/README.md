@@ -2,7 +2,7 @@
 
 Use the [project README](../README.md) for installation, configuration and usage, and the [contributing guide](../CONTRIBUTING.md) for the development workflow.
 
-- [Coding-agent usage analysis roadmap](usage-analysis-roadmap.md): planned session usage reports, native Codex reader and import of outcome/activity metadata from Session Knowledge.
+- [Coding-agent usage analysis roadmap](usage-analysis-roadmap.md): session usage reports and native Codex reader (complete), and planned import of outcome/activity metadata from Session Knowledge.
 
 ## Implemented work items
 
