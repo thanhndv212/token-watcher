@@ -266,3 +266,71 @@ describe("buildSessionUsageReport", () => {
     expect(JSON.stringify(a)).not.toContain("secret plan");
   });
 });
+
+describe("buildSessionUsageReport quota windows", () => {
+  const claude = async () => [
+    msg({ id: "a", sessionID: "s1", at: "2026-10-30T01:00:00Z" }),
+    msg({ id: "b", sessionID: "s1", at: "2026-10-30T07:00:00Z" }),
+  ];
+
+  it("is off unless requested and never reads quota history then", async () => {
+    let reads = 0;
+    const report = await buildSessionUsageReport(
+      {},
+      deps({ readClaude: claude, readQuotaWindows: async () => (reads++, []) }),
+    );
+    expect(report.quotaWindows).toBeNull();
+    expect(reads).toBe(0);
+  });
+
+  it("places responses on recorded windows and leaves the rest unattributed", async () => {
+    const report = await buildSessionUsageReport(
+      { quotaWindows: true },
+      deps({
+        readClaude: claude,
+        readQuotaWindows: async () => [
+          {
+            provider: "anthropic",
+            account: "unknown",
+            kind: "5h:",
+            group: "Claude",
+            model: null,
+            observedAtMs: Date.parse("2026-10-30T00:30:00Z"),
+            resetsAtMs: Date.parse("2026-10-30T05:00:00Z"),
+            percentUsed: 42,
+          },
+        ],
+      }),
+    );
+    expect(report.quotaWindows).toMatchObject({
+      status: "read",
+      windows: [{ window: "5h", percentUsed: 42, sessions: 1, responses: 1, totalTokens: 100 }],
+      unattributed: [
+        { provider: "anthropic", window: "5h", reason: "outside-known-windows", responses: 1 },
+      ],
+    });
+  });
+
+  it("reports missing and unreadable history instead of empty windows", async () => {
+    const missing = await buildSessionUsageReport(
+      { quotaWindows: true },
+      deps({ readQuotaWindows: async () => null }),
+    );
+    expect(missing.quotaWindows).toEqual({ status: "not-found", windows: [], unattributed: [] });
+
+    const broken = await buildSessionUsageReport(
+      { quotaWindows: true },
+      deps({
+        readQuotaWindows: async () => {
+          throw new Error("database is locked\nstack");
+        },
+      }),
+    );
+    expect(broken.quotaWindows).toEqual({
+      status: "unavailable",
+      reason: "database is locked",
+      windows: [],
+      unattributed: [],
+    });
+  });
+});
