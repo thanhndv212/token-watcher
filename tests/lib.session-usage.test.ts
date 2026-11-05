@@ -334,3 +334,27 @@ describe("buildSessionUsageReport quota windows", () => {
     });
   });
 });
+
+describe("buildSessionUsageReport imports", () => {
+  it("is off unless requested and never reads the import store then", async () => {
+    let reads = 0;
+    const report = await buildSessionUsageReport(
+      {},
+      deps({ readImports: () => (reads++, { status: "not-found", path: "/x", records: [] }) }),
+    );
+    expect(report.imports).toBeNull();
+    expect(reads).toBe(0);
+  });
+
+  it("reports an import store that throws as unavailable", async () => {
+    const report = await buildSessionUsageReport(
+      { imports: true },
+      deps({
+        readImports: () => {
+          throw new Error("EACCES");
+        },
+      }),
+    );
+    expect(report.imports).toMatchObject({ status: "unavailable", reason: "EACCES" });
+  });
+});

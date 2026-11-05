@@ -47,6 +47,7 @@ describe("parseSessionsArgs", () => {
       windows: false,
     });
     expect(parseSessionsArgs(["--windows"], NOW)).toMatchObject({ ok: true, windows: true });
+    expect(parseSessionsArgs(["--imports"], NOW)).toMatchObject({ ok: true, imports: true });
   });
 
   it("accepts dates, day counts and inline values", () => {
@@ -181,6 +182,93 @@ describe("runCliSessionsCommand", () => {
       stdout: out.stream,
     });
     expect(out.read()).toContain("No quota history recorded on this machine yet.");
+  });
+
+  it("shows imported activity-only rows and labels outcomes as a git proxy", async () => {
+    const out = capture();
+    const record = (source: string, sessionId: string, outcome: unknown) => ({
+      contract: 1,
+      machineId: "linux-box",
+      source,
+      sessionId,
+      parentSessionId: null,
+      isSubagent: null,
+      projectId: null,
+      startedAtMs: Date.parse("2026-10-13T09:00:00Z"),
+      endedAtMs: null,
+      models: [],
+      activity: { userTurns: 3, assistantTurns: 3, toolCalls: null },
+      usage: { method: "unavailable" as const },
+      outcome,
+    });
+    await runCliSessionsCommand({
+      argv: ["--imports"],
+      nowMs: NOW,
+      deps: {
+        ...deps,
+        readImports: () => ({
+          status: "read",
+          path: "/tmp/store.json",
+          records: [
+            record("claude-code", "claude-session-1", {
+              method: "git-proxy",
+              commits: ["abc1234"],
+              pullRequests: [],
+            }),
+            record("copilot", "cp-1", null),
+          ] as never,
+        }),
+      },
+      stdout: out.stream,
+    });
+    const text = out.read();
+    expect(text).toContain("Imported sessions (Session Knowledge): 2 in range of 2 stored");
+    expect(text).toMatch(/copilot\s+none\s+1\s+3\s+3\s+n\/a\s+n\/a\s+0/);
+    expect(text).toContain("Outcomes (git proxy:");
+    expect(text).toContain("This machine: 1 matched native sessions, 2.0k tokens");
+  });
+
+  it("says so when nothing has been imported", async () => {
+    const out = capture();
+    await runCliSessionsCommand({
+      argv: ["--imports"],
+      nowMs: NOW,
+      deps: { ...deps, readImports: () => ({ status: "not-found", path: "/x", records: [] }) },
+      stdout: out.stream,
+    });
+    expect(out.read()).toContain("Imported sessions: none yet");
+  });
+
+  it("runs sessions import and exits 2 when lines are rejected", async () => {
+    const out = capture();
+    const files: string[] = [];
+    const code = await runCliSessionsCommand({
+      argv: ["import", "export.jsonl"],
+      stdout: out.stream,
+      importFile: (file) => {
+        files.push(file);
+        return {
+          storePath: "/tmp/store.json",
+          read: 3,
+          added: 1,
+          updated: 0,
+          unchanged: 1,
+          rejected: 1,
+          rejections: [{ line: 3, error: "source must be a lower-case source id" }],
+          stored: 2,
+        };
+      },
+    });
+    expect(files).toEqual(["export.jsonl"]);
+    expect(code).toBe(2);
+    expect(out.read()).toContain("added 1, updated 0, unchanged 1, rejected 1; 2 stored");
+    expect(out.read()).toContain("line 3: source must be a lower-case source id");
+  });
+
+  it("requires exactly one file for sessions import", async () => {
+    const err = capture();
+    expect(await runCliSessionsCommand({ argv: ["import"], stderr: err.stream })).toBe(1);
+    expect(err.read()).toContain("sessions import takes one export file.");
   });
 
   it("exits 1 with usage on a bad option", async () => {

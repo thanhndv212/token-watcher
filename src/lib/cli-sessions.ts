@@ -8,6 +8,11 @@ import {
   type SessionUsageReport,
   type UsageSummary,
 } from "./session-usage.js";
+import {
+  importUsageRecordsFromFile,
+  type ImportedUsageSummary,
+  type ImportResult,
+} from "./usage-import-store.js";
 
 export interface RunCliSessionsCommandOptions {
   argv?: string[];
@@ -15,6 +20,8 @@ export interface RunCliSessionsCommandOptions {
   deps?: Partial<SessionUsageDeps>;
   stdout?: Pick<NodeJS.WriteStream, "write">;
   stderr?: Pick<NodeJS.WriteStream, "write">;
+  /** Import implementation; replaced in tests. */
+  importFile?: (file: string) => ImportResult;
 }
 
 const DAY_MS = 86_400_000;
@@ -24,7 +31,8 @@ const DEFAULT_LIMIT = 10;
 export const SESSIONS_USAGE = [
   "Usage:",
   "  npx @thanhndv212/token-watcher sessions [--since <YYYY-MM-DD|Nd>] [--until <YYYY-MM-DD>]",
-  "                                         [--limit <n>] [--windows] [--json]",
+  "                                         [--limit <n>] [--windows] [--imports] [--json]",
+  "  npx @thanhndv212/token-watcher sessions import <export.jsonl>",
   "",
   "Per-session token usage from Claude Code, OpenCode and Codex on this machine,",
   "with weekly trends and session-length buckets. Local and read-only.",
@@ -34,8 +42,12 @@ export const SESSIONS_USAGE = [
   "  --until <date>     End of the window, inclusive UTC date (default: now)",
   `  --limit <n>        Sessions to list in text output (default: ${DEFAULT_LIMIT})`,
   "  --windows          Also place usage on recorded provider quota windows (5h, weekly, ...)",
+  "  --imports          Also show imported Session Knowledge activity and git-proxy outcomes",
   "  --json             Print the full report as JSON",
   "  --help, -h         Show help",
+  "",
+  "import <file> adds Session Knowledge records (usage import contract 1, JSON lines or a",
+  "JSON array) to a local store. Re-importing the same file changes nothing.",
 ].join("\n");
 
 type ParsedSessionsArgs =
@@ -44,6 +56,7 @@ type ParsedSessionsArgs =
       help: boolean;
       json: boolean;
       windows: boolean;
+      imports: boolean;
       sinceMs: number;
       untilMs?: number;
       limit: number;
@@ -59,6 +72,7 @@ function parseUtcDate(value: string): number | null {
 export function parseSessionsArgs(argv: string[], nowMs: number): ParsedSessionsArgs {
   let json = false;
   let windows = false;
+  let imports = false;
   let sinceMs = nowMs - DEFAULT_DAYS * DAY_MS;
   let untilMs: number | undefined;
   let limit = DEFAULT_LIMIT;
@@ -66,7 +80,7 @@ export function parseSessionsArgs(argv: string[], nowMs: number): ParsedSessions
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]!;
     if (arg === "--help" || arg === "-h") {
-      return { ok: true, help: true, json: false, windows: false, sinceMs, limit };
+      return { ok: true, help: true, json: false, windows: false, imports: false, sinceMs, limit };
     }
     if (arg === "--json") {
       json = true;
@@ -74,6 +88,10 @@ export function parseSessionsArgs(argv: string[], nowMs: number): ParsedSessions
     }
     if (arg === "--windows") {
       windows = true;
+      continue;
+    }
+    if (arg === "--imports") {
+      imports = true;
       continue;
     }
 
@@ -117,7 +135,7 @@ export function parseSessionsArgs(argv: string[], nowMs: number): ParsedSessions
   if (untilMs !== undefined && untilMs < sinceMs) {
     return { ok: false, error: "--until is before --since." };
   }
-  return { ok: true, help: false, json, windows, sinceMs, untilMs, limit };
+  return { ok: true, help: false, json, windows, imports, sinceMs, untilMs, limit };
 }
 
 const NA = "n/a";
@@ -278,6 +296,83 @@ export function formatQuotaWindowLines(usage: QuotaWindowUsage): string[] {
   return lines;
 }
 
+function countOrNa(value: number | null): string {
+  return value === null ? NA : String(value);
+}
+
+export function formatImportLines(imports: ImportedUsageSummary): string[] {
+  const lines: string[] = [];
+  if (imports.status === "not-found") {
+    return ["Imported sessions: none yet; run `token-watcher sessions import <file>`.", ""];
+  }
+  if (imports.status === "unavailable") {
+    return [`Imported sessions: unavailable (${imports.reason ?? "read failed"}).`, ""];
+  }
+  lines.push(
+    `Imported sessions (Session Knowledge): ${imports.inRange} in range of ${imports.storedRecords} stored` +
+      (imports.undated ? `, ${imports.undated} undated` : ""),
+  );
+  if (imports.bySource.length > 0) {
+    lines.push(
+      ...table(
+        ["source", "tokens from", "sessions", "user", "assistant", "tools", "tokens", "outcome"],
+        imports.bySource.map((r) => [
+          r.source,
+          r.owner === "native" ? "native" : r.owner === "import" ? "import" : "none",
+          String(r.sessions),
+          countOrNa(r.userTurns),
+          countOrNa(r.assistantTurns),
+          countOrNa(r.toolCalls),
+          r.importedTokens === null
+            ? r.owner === "native"
+              ? "above"
+              : NA
+            : formatTokens(r.importedTokens),
+          String(r.withOutcome),
+        ]),
+      ),
+    );
+  }
+  lines.push("");
+  const o = imports.outcomes;
+  lines.push(
+    "Outcomes (git proxy: commits/PRs Session Knowledge linked to a session, not proof of delivered work):",
+  );
+  if (o.sessions === 0) {
+    lines.push("  No imported session in range has a linked commit or pull request.");
+  } else {
+    lines.push(
+      `  ${o.sessions} sessions linked to ${o.commits} commits and ${o.pullRequests} pull requests.`,
+      `  This machine: ${o.matchedNativeSessions} matched native sessions, ${formatTokens(o.matchedTokens)} tokens, ` +
+        `${usd(o.matchedCostUsd)} cost, ${o.matchedCommits} commits, ${usd(o.costPerCommitUsd)} per commit.`,
+    );
+    if (o.unmatchedLocal > 0) {
+      lines.push(
+        `  ${o.unmatchedLocal} linked sessions from this machine have no native session in range.`,
+      );
+    }
+    if (o.otherMachines > 0) {
+      lines.push(
+        `  ${o.otherMachines} linked sessions are from other machines; their tokens are not read here.`,
+      );
+    }
+  }
+  lines.push("");
+  return lines;
+}
+
+function formatImportResult(r: ImportResult): string {
+  const lines = [
+    `Imported ${r.read} records into ${r.storePath}:`,
+    `  added ${r.added}, updated ${r.updated}, unchanged ${r.unchanged}, rejected ${r.rejected}; ${r.stored} stored`,
+  ];
+  for (const x of r.rejections) lines.push(`  line ${x.line}: ${x.error}`);
+  if (r.rejected > r.rejections.length) {
+    lines.push(`  ... and ${r.rejected - r.rejections.length} more rejected`);
+  }
+  return lines.join("\n") + "\n";
+}
+
 export function formatSessionUsageText(report: SessionUsageReport, limit: number): string {
   const lines: string[] = [];
   const until = report.untilMs === null ? "now" : isoDate(report.untilMs);
@@ -363,6 +458,7 @@ export function formatSessionUsageText(report: SessionUsageReport, limit: number
   }
 
   if (report.quotaWindows) lines.push(...formatQuotaWindowLines(report.quotaWindows));
+  if (report.imports) lines.push(...formatImportLines(report.imports));
 
   lines.push("Notes:");
   for (const note of report.notes) lines.push(`  - ${note}`);
@@ -379,7 +475,29 @@ export async function runCliSessionsCommand(
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const nowMs = options.nowMs ?? Date.now();
-  const parsed = parseSessionsArgs(options.argv ?? [], nowMs);
+  const argv = options.argv ?? [];
+
+  if (argv[0] === "import") {
+    const rest = argv.slice(1);
+    if (rest.includes("--help") || rest.includes("-h")) {
+      stdout.write(`${SESSIONS_USAGE}\n`);
+      return 0;
+    }
+    if (rest.length !== 1 || rest[0]!.startsWith("-")) {
+      stderr.write(`sessions import takes one export file.\n\n${SESSIONS_USAGE}\n`);
+      return 1;
+    }
+    try {
+      const result = (options.importFile ?? ((f) => importUsageRecordsFromFile(f)))(rest[0]!);
+      stdout.write(formatImportResult(result));
+      return result.rejected > 0 ? 2 : 0;
+    } catch (error) {
+      stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    }
+  }
+
+  const parsed = parseSessionsArgs(argv, nowMs);
 
   if (!parsed.ok) {
     stderr.write(`${parsed.error}\n\n${SESSIONS_USAGE}\n`);
@@ -391,7 +509,13 @@ export async function runCliSessionsCommand(
   }
 
   const report = await buildSessionUsageReport(
-    { sinceMs: parsed.sinceMs, untilMs: parsed.untilMs, nowMs, quotaWindows: parsed.windows },
+    {
+      sinceMs: parsed.sinceMs,
+      untilMs: parsed.untilMs,
+      nowMs,
+      quotaWindows: parsed.windows,
+      imports: parsed.imports,
+    },
     options.deps,
   );
   stdout.write(
