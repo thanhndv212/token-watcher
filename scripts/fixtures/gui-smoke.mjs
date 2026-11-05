@@ -74,7 +74,8 @@ ipcMain.handle = (channel, handler) => {
     channel.startsWith("quota:") ||
     channel.startsWith("alerts:") ||
     channel.startsWith("dashboardHistory:") ||
-    channel.startsWith("reset:")
+    channel.startsWith("reset:") ||
+    channel.startsWith("sessions:")
   )
     realHandle(channel, handler);
   else
@@ -161,6 +162,7 @@ async function smoke() {
       [3, "override"],
       [4, "Create"],
       [5, "History"],
+      [6, "3 sessions, 3 responses"],
     ]) {
       await evaluate(`document.querySelectorAll('.tab-btn')[${index}].click()`);
       await waitFor(
@@ -499,7 +501,7 @@ async function smoke() {
     assert.deepEqual(errors, []);
     clearTimeout(deadline);
     console.log(
-      `Installed Electron GUI smoke passed: ${process.platform}, Electron ${process.versions.electron}, six tabs, config, startup/timer/tray/wake/coalesced HTTP refresh, stale/recovery, unsubscribe, persisted history, windowed budgets/rule edits, version, preload`,
+      `Installed Electron GUI smoke passed: ${process.platform}, Electron ${process.versions.electron}, seven tabs incl. sessions, config, startup/timer/tray/wake/coalesced HTTP refresh, stale/recovery, unsubscribe, persisted history, windowed budgets/rule edits, version, preload`,
     );
     assert.ok(helpers.length > 0, "installed main must launch the real history helper");
     app.once("will-quit", (event) => {

@@ -24,6 +24,8 @@ await withConsumer(process.argv[2], async (root) => {
   };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.OPENCODE_CONFIG_DIR;
+  delete env.CODEX_HOME;
+  delete env.TOKEN_WATCHER_IMPORT_STORE;
   const settingsDir = path.join(env.XDG_CONFIG_HOME, "opencode", "opencode-quota");
   await mkdir(settingsDir, { recursive: true });
   await writeFile(
