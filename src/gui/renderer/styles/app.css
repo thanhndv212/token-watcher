@@ -109,10 +109,18 @@ body {
   flex-shrink: 0;
   user-select: none;
   -webkit-app-region: drag;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tab-nav::-webkit-scrollbar {
+  display: none;
 }
 
 .tab-btn {
-  padding: 8px 12px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  padding: 8px 10px;
   background: none;
   border: none;
   color: var(--text-secondary);
@@ -212,6 +220,11 @@ body {
 .btn-small {
   padding: 3px 8px;
   font-size: 10px;
+}
+
+.btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .btn-primary {

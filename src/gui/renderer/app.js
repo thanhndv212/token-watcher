@@ -50,6 +50,11 @@
   let historyGroupBy = "All";
   let historyBurningSessions = [];
   let historyBurningWindowLabel = "";
+  let sessionView = null;
+  let sessionViewError = null;
+  let sessionDays = 28;
+  let sessionWindows = false;
+  let sessionImports = false;
 
   // ===========================================================================
   // DOM helpers
@@ -301,6 +306,9 @@
       case 5:
         renderHistoryInto(container);
         break;
+      case 6:
+        renderSessionsInto(container);
+        break;
     }
   }
 
@@ -312,8 +320,10 @@
   function updateTabNavHighlight() {
     const btns = $$(".tab-btn");
     btns.forEach((btn, i) => {
-      if (i === activeTab) btn.classList.add("active");
-      else btn.classList.remove("active");
+      if (i === activeTab) {
+        btn.classList.add("active");
+        if (btn.scrollIntoView) btn.scrollIntoView({ block: "nearest", inline: "nearest" });
+      } else btn.classList.remove("active");
     });
   }
 
@@ -355,6 +365,7 @@
     { label: "$ Pricing", title: "Pricing" },
     { label: "🔑 API Keys", title: "API Keys" },
     { label: "📈 History", title: "Quota History" },
+    { label: "☰ Sessions", title: "Session Usage" },
   ];
 
   function getActiveTabTitle() {
@@ -378,6 +389,7 @@
               if (i === 3) loadPricing();
               if (i === 4) loadApikeyStatus();
               if (i === 5) loadHistory();
+              if (i === 6) loadSessions();
             },
           },
           tab.label,
@@ -1371,6 +1383,369 @@
       modelCard.appendChild(table);
       container.appendChild(modelCard);
     }
+  }
+
+  // ===========================================================================
+  // Session usage (UA-TW-07): same report as `token-watcher sessions`
+  // ===========================================================================
+  const NA = "n/a";
+
+  async function loadSessions() {
+    sessionViewError = null;
+    setLoading(true);
+    try {
+      sessionView = await api.sessions.report({
+        days: sessionDays,
+        windows: sessionWindows,
+        imports: sessionImports,
+      });
+    } catch (e) {
+      sessionViewError = e && e.message ? e.message : String(e);
+    }
+    setLoading(false);
+    if (activeTab === 6) renderContent();
+  }
+
+  function pctOrNa(v) {
+    return v == null ? NA : Math.round(v * 100) + "%";
+  }
+
+  function usdOrNa(v) {
+    return v == null ? NA : fmtUsd(v);
+  }
+
+  function countOrNa(v) {
+    return v == null ? NA : formatNumber(v);
+  }
+
+  function utcMinute(ms) {
+    return ms == null ? NA : new Date(ms).toISOString().slice(0, 16).replace("T", " ");
+  }
+
+  function simpleTable(headers, rows, numericFrom) {
+    const table = el("table", { className: "data-table" });
+    const hRow = el("tr");
+    headers.forEach((h) => hRow.appendChild(el("th", {}, h)));
+    table.appendChild(el("thead", {}, hRow));
+    const tbody = el("tbody");
+    rows.forEach((cells) => {
+      const tr = el("tr");
+      cells.forEach((v, i) =>
+        tr.appendChild(el("td", { className: i >= numericFrom ? "num-col" : "text-col" }, v)),
+      );
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    return table;
+  }
+
+  function sessionCard(title, ...children) {
+    return el(
+      "div",
+      { className: "card" },
+      el("div", { className: "card-title" }, title),
+      ...children,
+    );
+  }
+
+  function renderSessionControls() {
+    const bar = el("div", {
+      className: "card",
+      style: { display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" },
+    });
+    [7, 14, 28, 90].forEach((d) =>
+      bar.appendChild(
+        el(
+          "button",
+          {
+            className: "btn btn-small" + (d === sessionDays ? " active" : ""),
+            onClick: () => {
+              sessionDays = d;
+              loadSessions();
+            },
+          },
+          d + " days",
+        ),
+      ),
+    );
+    const toggle = (label, value, set) => {
+      const input = el("input", { type: "checkbox" });
+      input.checked = value;
+      input.addEventListener("change", () => {
+        set(input.checked);
+        loadSessions();
+      });
+      return el("label", { style: { marginLeft: "8px" } }, input, " " + label);
+    };
+    bar.appendChild(toggle("Quota windows", sessionWindows, (v) => (sessionWindows = v)));
+    bar.appendChild(
+      toggle("Session Knowledge imports", sessionImports, (v) => (sessionImports = v)),
+    );
+    return bar;
+  }
+
+  function renderSessionsInto(container) {
+    container.appendChild(renderSessionControls());
+    if (sessionViewError) {
+      container.appendChild(
+        el("div", { className: "empty-state" }, el("div", { className: "text" }, sessionViewError)),
+      );
+      return;
+    }
+    const r = sessionView;
+    if (!r) {
+      container.appendChild(
+        el(
+          "div",
+          { className: "loading-center" },
+          el("span", { className: "spinner" }),
+          " Loading sessions...",
+        ),
+      );
+      return;
+    }
+
+    const m = r.machine || {};
+    const coverage = el("div", {});
+    coverage.appendChild(
+      renderKV("Machine", (m.machineId || "?") + (m.mapped ? "" : " (unmapped)")),
+    );
+    (r.coverage || []).forEach((c) => {
+      const detail =
+        c.status === "read"
+          ? c.sessions + " sessions, " + c.responses + " responses"
+          : c.status === "not-found"
+            ? "no local store found"
+            : "unavailable: " + (c.reason || "read failed");
+      coverage.appendChild(renderKV(c.source, detail));
+    });
+    container.appendChild(sessionCard("Sources — last " + r.days + " days", coverage));
+
+    if (!r.sessions.length) {
+      container.appendChild(
+        el(
+          "div",
+          { className: "empty-state" },
+          el("div", { className: "text" }, "No sessions with reported usage in this window."),
+        ),
+      );
+    } else {
+      const t = r.totals;
+      const grid = el("div", {
+        style: {
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr 1fr",
+          gap: "6px",
+          marginTop: "6px",
+        },
+      });
+      grid.appendChild(renderKV("Sessions", formatNumber(t.sessions)));
+      grid.appendChild(renderKV("Responses", formatNumber(t.responses)));
+      grid.appendChild(renderKV("Tokens", fmtCompact(t.totalTokens)));
+      grid.appendChild(renderKV("Cache read", pctOrNa(t.cacheReadShare)));
+      grid.appendChild(renderKV("Subagent share", pctOrNa(t.subagentShare)));
+      grid.appendChild(
+        renderKV(
+          "Cost (priced " + pctOrNa(t.pricedShare) + ")",
+          usdOrNa(t.costUsd),
+          "var(--accent)",
+        ),
+      );
+      container.appendChild(sessionCard("Totals", grid));
+
+      container.appendChild(
+        sessionCard(
+          "Weekly (weeks start Monday UTC)",
+          simpleTable(
+            ["Week", "Source", "Sessions", "Resp", "Tokens", "Cache", "Cost"],
+            r.weekly.map((w) => [
+              w.weekStart,
+              w.source,
+              formatNumber(w.sessions),
+              formatNumber(w.responses),
+              fmtCompact(w.totalTokens),
+              pctOrNa(w.cacheReadShare),
+              usdOrNa(w.costUsd),
+            ]),
+            2,
+          ),
+        ),
+      );
+
+      container.appendChild(
+        sessionCard(
+          "Top " + r.sessions.length + " of " + r.sessionCount + " sessions by tokens",
+          simpleTable(
+            [
+              "Source",
+              "Session",
+              "Project",
+              "Start (UTC)",
+              "Model",
+              "Resp",
+              "Tokens",
+              "Cache",
+              "Cost",
+            ],
+            r.sessions.map((s) => [
+              s.source,
+              s.sessionID.slice(0, 12),
+              s.project || NA,
+              utcMinute(s.startMs),
+              (s.models[0] && s.models[0].model) || NA,
+              formatNumber(s.responses),
+              fmtCompact(s.totalTokens),
+              pctOrNa(s.cacheReadShare),
+              usdOrNa(s.costUsd),
+            ]),
+            5,
+          ),
+        ),
+      );
+    }
+
+    if (r.quotaWindows) container.appendChild(renderSessionWindows(r.quotaWindows));
+    if (r.imports) container.appendChild(renderSessionImports(r.imports));
+
+    const notes = el("ul", { className: "card-subtitle" });
+    (r.notes || []).forEach((n) => notes.appendChild(el("li", {}, n)));
+    notes.appendChild(el("li", {}, NA + " means the value is not available, not zero."));
+    container.appendChild(sessionCard("Notes", notes));
+  }
+
+  function renderSessionWindows(q) {
+    if (q.status === "not-found") {
+      return sessionCard(
+        "Quota windows",
+        el("div", {}, "No quota history recorded on this machine yet."),
+      );
+    }
+    if (q.status === "unavailable") {
+      return sessionCard(
+        "Quota windows",
+        el("div", {}, "Quota history unavailable: " + (q.reason || "read failed")),
+      );
+    }
+    const children = [
+      simpleTable(
+        ["Provider", "Window", "Start (UTC)", "End (UTC)", "Used", "Resp", "Tokens"],
+        q.windows.map((w) => [
+          w.provider + (w.model ? " " + w.model : ""),
+          w.window +
+            (w.concurrent ? " ?" : "") +
+            (w.startMethod === "first-observation" ? " +" : ""),
+          utcMinute(w.startMs),
+          utcMinute(w.endMs),
+          w.percentUsed == null ? NA : Math.round(w.percentUsed) + "%",
+          formatNumber(w.responses),
+          fmtCompact(w.totalTokens),
+        ]),
+        4,
+      ),
+      el(
+        "div",
+        { className: "card-subtitle" },
+        "? windows from more than one account overlap, so no usage is placed in them; + started at the first observation.",
+      ),
+    ];
+    if (q.unattributed && q.unattributed.length) {
+      const list = el("ul", {});
+      q.unattributed.forEach((u) =>
+        list.appendChild(
+          el(
+            "li",
+            {},
+            (u.provider || "unknown") +
+              (u.window ? " " + u.window : "") +
+              ": " +
+              formatNumber(u.responses) +
+              " responses, " +
+              fmtCompact(u.totalTokens) +
+              " tokens (" +
+              u.reason +
+              ")",
+          ),
+        ),
+      );
+      children.push(
+        el(
+          "div",
+          { className: "card-title", style: { marginTop: "8px" } },
+          "Not placed on a window",
+        ),
+        list,
+      );
+    }
+    return sessionCard("Quota windows", ...children);
+  }
+
+  function renderSessionImports(imp) {
+    if (imp.status === "not-found") {
+      return sessionCard(
+        "Session Knowledge imports",
+        el("div", {}, "None yet. Run `token-watcher sessions import <file>`."),
+      );
+    }
+    if (imp.status === "unavailable") {
+      return sessionCard(
+        "Session Knowledge imports",
+        el("div", {}, "Import store unavailable: " + (imp.reason || "read failed")),
+      );
+    }
+    const o = imp.outcomes;
+    const outcome =
+      o.sessions === 0
+        ? el("div", {}, "No imported session in range has a linked commit or pull request.")
+        : el(
+            "div",
+            {},
+            o.sessions +
+              " sessions linked to " +
+              o.commits +
+              " commits and " +
+              o.pullRequests +
+              " pull requests. This machine: " +
+              o.matchedNativeSessions +
+              " matched sessions, " +
+              fmtCompact(o.matchedTokens) +
+              " tokens, " +
+              usdOrNa(o.matchedCostUsd) +
+              ", " +
+              usdOrNa(o.costPerCommitUsd) +
+              " per commit.",
+          );
+    return sessionCard(
+      "Session Knowledge imports — " +
+        imp.inRange +
+        " in range of " +
+        imp.storedRecords +
+        " stored",
+      simpleTable(
+        ["Source", "Tokens from", "Sessions", "User", "Assistant", "Tools", "Tokens", "Outcome"],
+        imp.bySource.map((row) => [
+          row.source,
+          row.owner,
+          formatNumber(row.sessions),
+          countOrNa(row.userTurns),
+          countOrNa(row.assistantTurns),
+          countOrNa(row.toolCalls),
+          row.importedTokens == null
+            ? row.owner === "native"
+              ? "native"
+              : NA
+            : fmtCompact(row.importedTokens),
+          formatNumber(row.withOutcome),
+        ]),
+        2,
+      ),
+      el("div", { className: "card-title", style: { marginTop: "8px" } }, "Outcomes (git proxy)"),
+      el(
+        "div",
+        { className: "card-subtitle" },
+        "Commits and pull requests Session Knowledge linked to a session; not proof of delivered work.",
+      ),
+      outcome,
+    );
   }
 
   // ===========================================================================

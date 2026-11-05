@@ -35,6 +35,8 @@ for (const key of [
   "OPENCODE_CONFIG_DIR",
   "OPENCODE_QUOTA_SYNC_DIR",
   "OPENCODE_QUOTA_PROJECT_ROOT",
+  "CODEX_HOME",
+  "TOKEN_WATCHER_IMPORT_STORE",
 ])
   delete env[key];
 const settings = path.join(env.XDG_CONFIG_HOME, "opencode", "opencode-quota");
@@ -190,14 +192,14 @@ try {
     return result.result.value;
   };
   await wait(
-    () => evaluate("!!window.quotaApi && document.querySelectorAll('.tab-btn').length===6"),
-    "preload and six tabs",
+    () => evaluate("!!window.quotaApi && document.querySelectorAll('.tab-btn').length===7"),
+    "preload and seven tabs incl. sessions",
   );
   assert.equal(await evaluate("window.quotaApi.app.getVersion()"), pkg.version);
   assert.deepEqual((await evaluate("window.quotaApi.config.quota()")).config.enabledProviders, []);
   await evaluate("window.quotaApi.quota.fetch(true)");
   const tabs = [];
-  for (let index = 0; index < 6; index++) {
+  for (let index = 0; index < 7; index++) {
     await evaluate(`document.querySelectorAll('.tab-btn')[${index}].click()`);
     const expected = [
       "Dashboard",
@@ -206,6 +208,7 @@ try {
       "Pricing Snapshot",
       "Create Key Store",
       nativeNotices ? "Confirmed Reset Events" : "No quota history yet",
+      "means the value is not available, not zero",
     ][index];
     await wait(
       () => evaluate(`document.body.innerText.includes(${JSON.stringify(expected)})`),
@@ -296,7 +299,7 @@ try {
     binary: path.resolve(binary),
     renderer: page.url,
     preload: true,
-    tabs: 6,
+    tabs: tabs.length,
     nativeDelivery,
     exceptions,
     classification:

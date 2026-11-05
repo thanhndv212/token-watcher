@@ -1,6 +1,6 @@
 # Coding-agent usage analysis roadmap
 
-**Status:** In progress. UA-TW-01 and UA-TW-04 (Token Watcher side, against fixtures), UA-TW-02, UA-TW-03, UA-TW-05 and UA-TW-06 are complete; UA-TW-07 is planned. Revised 2026-11-05.  
+**Status:** Complete on the Token Watcher side. UA-TW-01 to UA-TW-07 are complete; UA-TW-01 and UA-TW-04 were checked against fixtures until Session Knowledge ships its export. Revised 2026-11-05.  
 **Tracking issue:** [#67](https://github.com/thanhndv212/token-watcher/issues/67).  
 **Scope:** Token Watcher session-level usage reports, a native Codex reader and import of activity/outcome metadata from Session Knowledge.  
 **Companion plan:** [Session Knowledge usage analysis roadmap](https://github.com/thanhndv212/session-knowledge/blob/master/docs/usage-analysis-roadmap.md) (outcome linkage, Copilot/Zcode activity, cross-machine session metadata).
@@ -13,13 +13,13 @@ Help Thanh see, over time, where coding-agent tokens go and which working habits
 
 Every metric and view in this roadmap exists to answer one of these. Add a question before adding a metric.
 
-| ID | Question | Primary measures |
-| --- | --- | --- |
-| Q1 | Is my cache reuse improving or degrading over time? | Cache-read share of input tokens per session and per week, by tool/model. |
-| Q2 | When does a long session stop paying off? | Tokens per turn and cache-read share by turn index/session length; sessions above a size threshold. |
-| Q3 | What does a unit of delivered work cost per tool/model? | Tokens (and estimated USD where priced) per session with a linked commit/PR; sessions with no linked outcome. |
-| Q4 | How much usage is subagent or parallel-session overhead? | Share of tokens in subagent/sidechain sessions where the source marks them; concurrent sessions per hour. |
-| Q5 | How does my local usage line up with quota windows? | Session tokens inside each provider's 5-hour/weekly window, beside the quota percentages Token Watcher already tracks. |
+| ID  | Question                                                 | Primary measures                                                                                                       |
+| --- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Q1  | Is my cache reuse improving or degrading over time?      | Cache-read share of input tokens per session and per week, by tool/model.                                              |
+| Q2  | When does a long session stop paying off?                | Tokens per turn and cache-read share by turn index/session length; sessions above a size threshold.                    |
+| Q3  | What does a unit of delivered work cost per tool/model?  | Tokens (and estimated USD where priced) per session with a linked commit/PR; sessions with no linked outcome.          |
+| Q4  | How much usage is subagent or parallel-session overhead? | Share of tokens in subagent/sidechain sessions where the source marks them; concurrent sessions per hour.              |
+| Q5  | How does my local usage line up with quota windows?      | Session tokens inside each provider's 5-hour/weekly window, beside the quota percentages Token Watcher already tracks. |
 
 These are trend indicators. Token counts alone cannot establish code quality or that a task was completed efficiently; Q3 depends on an explicitly labelled outcome proxy.
 
@@ -36,13 +36,13 @@ Token Watcher already provides much of the substrate; this roadmap extends it ra
 
 One owner per value, so no session is counted twice.
 
-| Source | Token values owned by | Activity / outcome metadata | Notes |
-| --- | --- | --- | --- |
-| Claude Code | Token Watcher native reader | Session Knowledge import | Imported token fields for this source are ignored. |
-| OpenCode | Token Watcher native reader | Session Knowledge import | Session totals only unless message-level counts are verified. |
-| Codex | Token Watcher native reader (UA-TW-02) | Session Knowledge import | Cumulative vs per-turn semantics must be proven by fixtures. |
-| GitHub Copilot | None (unavailable) | Session Knowledge import | Activity only. Organization/enterprise metrics are not per-session tokens. |
-| Zcode | None until its native store is verified | Session Knowledge import | Activity only. |
+| Source         | Token values owned by                   | Activity / outcome metadata | Notes                                                                      |
+| -------------- | --------------------------------------- | --------------------------- | -------------------------------------------------------------------------- |
+| Claude Code    | Token Watcher native reader             | Session Knowledge import    | Imported token fields for this source are ignored.                         |
+| OpenCode       | Token Watcher native reader             | Session Knowledge import    | Session totals only unless message-level counts are verified.              |
+| Codex          | Token Watcher native reader (UA-TW-02)  | Session Knowledge import    | Cumulative vs per-turn semantics must be proven by fixtures.               |
+| GitHub Copilot | None (unavailable)                      | Session Knowledge import    | Activity only. Organization/enterprise metrics are not per-session tokens. |
+| Zcode          | None until its native store is verified | Session Knowledge import    | Activity only.                                                             |
 
 Join key: `(machineId, source, sessionId)`. Token Watcher maps its own hostname to `machineId` using the Session Knowledge machine registry (`~/session-trace-data/machines.json`) so both tools use one machine identity; an unmapped host keeps its hostname and is shown as unmapped.
 
@@ -84,15 +84,15 @@ Session Knowledge produces, and Token Watcher consumes, one record per session. 
 
 ## Delivery work items
 
-| ID | Status | Deliverable and acceptance evidence | Depends on |
-| --- | --- | --- | --- |
-| [UA-TW-01](https://github.com/thanhndv212/token-watcher/issues/68) | Complete on the Token Watcher side ([record](work-items/UA_TW01_USAGE_IMPORT_CONTRACT.md)); Session Knowledge adoption pending | Agree the import record and source-of-truth rule above with Session Knowledge; implement hostname→`machineId` mapping. Tests prove an imported record for a natively read source never changes token totals. | UA-SK-01 |
-| [UA-TW-02](https://github.com/thanhndv212/token-watcher/issues/69) | Complete ([record](work-items/UA_TW02_CODEX_SESSION_READER.md), PR #75) | Native Codex reader for `~/.codex/sessions/**/*.jsonl` feeding existing token reports and pricing. Fixtures cover cumulative and per-turn usage events, resumed sessions and duplicated records; totals reconcile with the fixture. | — |
-| [UA-TW-03](https://github.com/thanhndv212/token-watcher/issues/70) | Complete ([record](work-items/UA_TW03_SESSION_USAGE_REPORT.md), PR #76) | Session usage report: `token-watcher sessions [--since] [--json]` plus a weekly trend, answering Q1, Q2 and Q4 for Claude Code, OpenCode and Codex (turns, duration, cache-read share, tokens per turn, model mix, subagent share where marked). Reports state source coverage and gaps. | UA-TW-02 for Codex rows |
-| [UA-TW-04](https://github.com/thanhndv212/token-watcher/issues/71) | Complete on the Token Watcher side, against contract 1 fixtures ([record](work-items/UA_TW04_SESSION_KNOWLEDGE_IMPORT.md)); Session Knowledge export pending | Idempotent, additive import of Session Knowledge records (activity, project, outcome) stored separately from existing daily/provider history. Re-import of the same fixtures produces no duplicates; Copilot/Zcode appear as activity-only rows. Enables Q3. | UA-TW-01, UA-SK-03, UA-SK-05 |
-| [UA-TW-05](https://github.com/thanhndv212/token-watcher/issues/72) | Complete ([record](work-items/UA_TW05_QUOTA_WINDOW_USAGE.md)) | Q5: place session usage on the provider quota windows Token Watcher already records. Sessions outside known windows stay unattributed rather than assigned. | UA-TW-03 |
-| [UA-TW-06](https://github.com/thanhndv212/token-watcher/issues/73) | Complete ([record](work-items/UA_TW06_CROSS_MACHINE_SYNC.md); `token-sync` extended with format version 3) | Consolidate cross-machine usage onto one channel: either extend `token-sync` with Claude Code/Codex sessions keyed by `machineId`, or read per-machine usage from Session Knowledge exports and retire `token-sync`. Decide from UA-TW-03 experience; provide migration and rollback for existing `token-sync/*.json`. | UA-TW-01, UA-TW-03 |
-| [UA-TW-07](https://github.com/thanhndv212/token-watcher/issues/74) | Planned | GUI views for the questions that proved useful in CLI form, then package/installed-artifact acceptance and documentation (data locations, privacy, refresh, limits, rollback). | UA-TW-03, UA-TW-04 |
+| ID                                                                 | Status                                                                                                                                                       | Deliverable and acceptance evidence                                                                                                                                                                                                                                                                                    | Depends on                   |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| [UA-TW-01](https://github.com/thanhndv212/token-watcher/issues/68) | Complete on the Token Watcher side ([record](work-items/UA_TW01_USAGE_IMPORT_CONTRACT.md)); Session Knowledge adoption pending                               | Agree the import record and source-of-truth rule above with Session Knowledge; implement hostname→`machineId` mapping. Tests prove an imported record for a natively read source never changes token totals.                                                                                                           | UA-SK-01                     |
+| [UA-TW-02](https://github.com/thanhndv212/token-watcher/issues/69) | Complete ([record](work-items/UA_TW02_CODEX_SESSION_READER.md), PR #75)                                                                                      | Native Codex reader for `~/.codex/sessions/**/*.jsonl` feeding existing token reports and pricing. Fixtures cover cumulative and per-turn usage events, resumed sessions and duplicated records; totals reconcile with the fixture.                                                                                    | —                            |
+| [UA-TW-03](https://github.com/thanhndv212/token-watcher/issues/70) | Complete ([record](work-items/UA_TW03_SESSION_USAGE_REPORT.md), PR #76)                                                                                      | Session usage report: `token-watcher sessions [--since] [--json]` plus a weekly trend, answering Q1, Q2 and Q4 for Claude Code, OpenCode and Codex (turns, duration, cache-read share, tokens per turn, model mix, subagent share where marked). Reports state source coverage and gaps.                               | UA-TW-02 for Codex rows      |
+| [UA-TW-04](https://github.com/thanhndv212/token-watcher/issues/71) | Complete on the Token Watcher side, against contract 1 fixtures ([record](work-items/UA_TW04_SESSION_KNOWLEDGE_IMPORT.md)); Session Knowledge export pending | Idempotent, additive import of Session Knowledge records (activity, project, outcome) stored separately from existing daily/provider history. Re-import of the same fixtures produces no duplicates; Copilot/Zcode appear as activity-only rows. Enables Q3.                                                           | UA-TW-01, UA-SK-03, UA-SK-05 |
+| [UA-TW-05](https://github.com/thanhndv212/token-watcher/issues/72) | Complete ([record](work-items/UA_TW05_QUOTA_WINDOW_USAGE.md))                                                                                                | Q5: place session usage on the provider quota windows Token Watcher already records. Sessions outside known windows stay unattributed rather than assigned.                                                                                                                                                            | UA-TW-03                     |
+| [UA-TW-06](https://github.com/thanhndv212/token-watcher/issues/73) | Complete ([record](work-items/UA_TW06_CROSS_MACHINE_SYNC.md); `token-sync` extended with format version 3)                                                   | Consolidate cross-machine usage onto one channel: either extend `token-sync` with Claude Code/Codex sessions keyed by `machineId`, or read per-machine usage from Session Knowledge exports and retire `token-sync`. Decide from UA-TW-03 experience; provide migration and rollback for existing `token-sync/*.json`. | UA-TW-01, UA-TW-03           |
+| [UA-TW-07](https://github.com/thanhndv212/token-watcher/issues/74) | Complete ([record](work-items/UA_TW07_GUI_SESSION_VIEWS.md); GUI Sessions tab and README section)                                                            | GUI views for the questions that proved useful in CLI form, then package/installed-artifact acceptance and documentation (data locations, privacy, refresh, limits, rollback).                                                                                                                                         | UA-TW-03, UA-TW-04           |
 
 UA-TW-02 and UA-TW-03 do not depend on Session Knowledge and should ship first.
 
