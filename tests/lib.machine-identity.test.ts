@@ -12,9 +12,48 @@ function registry(value: unknown) {
 }
 
 describe("resolveMachineIdentity", () => {
+  it("prefers the registry entry for this host's native id over hostname matching", () => {
+    const identity = resolveMachineIdentity({
+      // macOS renamed the host after a name conflict, so the hostname no longer matches.
+      hostname: "Thanhs-MacBook-Pro-3.local",
+      nativeMachineId: "AED6D88B-1",
+      readFile: registry({
+        "AED6D88B-1": { hostname: "thanhs-macbook-pro" },
+        "11f959c8-2": { hostname: "" },
+      }),
+    });
+    expect(identity).toEqual({
+      machineId: "AED6D88B-1",
+      hostname: "Thanhs-MacBook-Pro-3.local",
+      mapped: true,
+      status: "mapped",
+    });
+  });
+
+  it("maps a registry entry recorded without a hostname by native id", () => {
+    expect(
+      resolveMachineIdentity({
+        hostname: "dell",
+        nativeMachineId: "11f959c8-2",
+        readFile: registry({ "11f959c8-2": { hostname: "" } }),
+      }),
+    ).toMatchObject({ machineId: "11f959c8-2", mapped: true });
+  });
+
+  it("falls back to hostname matching when the native id is unknown", () => {
+    expect(
+      resolveMachineIdentity({
+        hostname: "dell",
+        nativeMachineId: "not-registered",
+        readFile: registry({ "11f959c8-2": { hostname: "dell" } }),
+      }),
+    ).toMatchObject({ machineId: "11f959c8-2", mapped: true });
+  });
+
   it("maps an exact hostname match to its registry id", () => {
     const identity = resolveMachineIdentity({
       hostname: "Thanhs-MacBook.local",
+      nativeMachineId: null,
       readFile: registry({
         "AED6D88B-1": { hostname: "thanhs-macbook" },
         "11f959c8-2": { hostname: "dell-linux" },
@@ -69,7 +108,10 @@ describe("resolveMachineIdentity", () => {
   });
 
   it("reads the Session Knowledge registry under the home directory by default", () => {
-    expect(getMachineRegistryPath("/home/u")).toBe("/home/u/session-trace-data/machines.json");
+    expect(getMachineRegistryPath("/home/u", "")).toBe("/home/u/session-trace-data/machines.json");
+    expect(getMachineRegistryPath("/home/u", "/home/u/Develop/session-trace-data")).toBe(
+      "/home/u/Develop/session-trace-data/machines.json",
+    );
     let readPath = "";
     resolveMachineIdentity({
       hostname: "h",
