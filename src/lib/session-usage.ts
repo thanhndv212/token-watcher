@@ -166,7 +166,7 @@ const defaultDeps: SessionUsageDeps = {
 export const SESSION_USAGE_NOTES = [
   "Counts are what each source reported on this machine, not billed or quota usage.",
   "Cost is estimated from the bundled or user pricing snapshot and covers only the priced share of tokens.",
-  "Other machines are not included yet (UA-TW-06).",
+  "Other machines are not included here; the dashboard's All machines view merges token-sync exports (UA-TW-06).",
   "GitHub Copilot and Zcode record no token counts and are not included (UA-TW-04).",
   "Sessions crossing the window edge only count responses inside the window.",
 ];
