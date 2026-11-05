@@ -28,6 +28,12 @@ import { getCodexCliSessionsDir, iterCodexCliMessages } from "./codex-cli-storag
 import { resolveMachineIdentity, type MachineIdentity } from "./machine-identity.js";
 import { priceTokensUsd } from "./quota-stats.js";
 import {
+  readUsageImportStore,
+  summariseImports,
+  type ImportedUsageSummary,
+  type StoreRead,
+} from "./usage-import-store.js";
+import {
   placeUsageOnQuotaWindows,
   readQuotaWindowObservations,
   windowsInRange,
@@ -130,6 +136,8 @@ export type SessionUsageReport = {
   sessions: SessionUsageRow[];
   /** Usage placed on recorded quota windows; null unless requested. */
   quotaWindows: QuotaWindowUsage | null;
+  /** Imported Session Knowledge activity and git-proxy outcomes; null unless requested. */
+  imports: ImportedUsageSummary | null;
 };
 
 export type SessionUsageDeps = {
@@ -142,6 +150,8 @@ export type SessionUsageDeps = {
   machine: () => MachineIdentity;
   /** Recorded quota limits; null when there is no history database. */
   readQuotaWindows: (p: { sinceMs?: number }) => Promise<QuotaWindowObservation[] | null>;
+  /** Imported Session Knowledge records (UA-TW-04). */
+  readImports: () => StoreRead;
 };
 
 const defaultDeps: SessionUsageDeps = {
@@ -161,13 +171,14 @@ const defaultDeps: SessionUsageDeps = {
   price: priceTokensUsd,
   machine: () => resolveMachineIdentity(),
   readQuotaWindows: (p) => readQuotaWindowObservations(p),
+  readImports: () => readUsageImportStore(),
 };
 
 export const SESSION_USAGE_NOTES = [
   "Counts are what each source reported on this machine, not billed or quota usage.",
   "Cost is estimated from the bundled or user pricing snapshot and covers only the priced share of tokens.",
   "Other machines are not included here; the dashboard's All machines view merges token-sync exports (UA-TW-06).",
-  "GitHub Copilot and Zcode record no token counts and are not included (UA-TW-04).",
+  "GitHub Copilot and Zcode record no token counts; with --imports they appear as activity-only rows from Session Knowledge (UA-TW-04).",
   "Sessions crossing the window edge only count responses inside the window.",
 ];
 
@@ -362,6 +373,8 @@ export async function buildSessionUsageReport(
     nowMs?: number;
     /** Also place responses on recorded provider quota windows (UA-TW-05). */
     quotaWindows?: boolean;
+    /** Also summarise imported Session Knowledge records (UA-TW-04). */
+    imports?: boolean;
   } = {},
   deps: Partial<SessionUsageDeps> = {},
 ): Promise<SessionUsageReport> {
@@ -573,9 +586,27 @@ export async function buildSessionUsageReport(
     }
   }
 
+  const machine = d.machine();
+  let imports: ImportedUsageSummary | null = null;
+  if (params.imports) {
+    let store: StoreRead;
+    try {
+      store = d.readImports();
+    } catch (error) {
+      store = { status: "unreadable", path: "", reason: errorReason(error), records: [] };
+    }
+    imports = summariseImports({
+      store,
+      sinceMs: params.sinceMs ?? null,
+      untilMs: params.untilMs ?? null,
+      machineId: machine.machineId,
+      nativeSessions: rows,
+    });
+  }
+
   return {
     generatedAtMs: params.nowMs ?? Date.now(),
-    machine: d.machine(),
+    machine,
     sinceMs: params.sinceMs ?? null,
     untilMs: params.untilMs ?? null,
     coverage: SESSION_USAGE_SOURCES.map((source) => coverage.get(source)!),
@@ -585,5 +616,6 @@ export async function buildSessionUsageReport(
     lengthBuckets: bucketRows,
     sessions: rows,
     quotaWindows,
+    imports,
   };
 }
