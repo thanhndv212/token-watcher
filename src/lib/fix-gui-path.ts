@@ -29,7 +29,10 @@ export async function resolveLoginShellPath(shellOverride?: string): Promise<str
     // Some shell configs print a banner/MOTD to stdout before our command
     // runs; PATH itself never contains a newline, so the last non-blank
     // line is safe to take even if earlier lines are noise.
-    const lines = stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const lines = stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
     const lastLine = lines[lines.length - 1];
     return lastLine || null;
   } catch {
@@ -44,11 +47,48 @@ export function mergePathEnv(currentPath: string | undefined, loginShellPath: st
 }
 
 /**
+ * Variables other tools export from the shell profile that change where
+ * Token Watcher reads data. `SESSION_TRACE_DIR` locates the Session Knowledge
+ * machine registry.
+ */
+export const LOGIN_SHELL_ENV_VARS = ["SESSION_TRACE_DIR"] as const;
+
+/** One variable from the login shell, or null when unset or unavailable. */
+export async function resolveLoginShellVar(
+  name: (typeof LOGIN_SHELL_ENV_VARS)[number],
+  shellOverride?: string,
+): Promise<string | null> {
+  if (process.platform === "win32") return null;
+  const shellPath = shellOverride ?? process.env.SHELL ?? "/bin/zsh";
+  try {
+    const { stdout } = await execFileAsync(shellPath, ["-ilc", `echo -n "$${name}"`], {
+      timeout: LOGIN_SHELL_PATH_TIMEOUT_MS,
+      encoding: "utf8",
+    });
+    const lines = stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    return lines[lines.length - 1] || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Best-effort: never throws, leaves `env.PATH` untouched if the login shell
  * can't be resolved (unsupported shell, timeout, sandboxed environment).
+ * Variables in {@link LOGIN_SHELL_ENV_VARS} are filled in only when unset.
  */
 export async function fixGuiProcessPath(env: NodeJS.ProcessEnv = process.env): Promise<void> {
-  const loginShellPath = await resolveLoginShellPath();
+  const missing = LOGIN_SHELL_ENV_VARS.filter((name) => !env[name]);
+  const [loginShellPath, ...values] = await Promise.all([
+    resolveLoginShellPath(),
+    ...missing.map((name) => resolveLoginShellVar(name)),
+  ]);
+  missing.forEach((name, i) => {
+    if (values[i]) env[name] = values[i]!;
+  });
   if (!loginShellPath) return;
   env.PATH = mergePathEnv(env.PATH, loginShellPath);
 }

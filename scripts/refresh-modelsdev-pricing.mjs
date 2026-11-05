@@ -1,4 +1,4 @@
-import { mkdir, rename, rm, writeFile } from "fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "fs/promises";
 import { dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -122,16 +122,53 @@ function buildSnapshot(api, providerIDs) {
   };
 }
 
+// models.dev drops retired models, but users still have history on them. Keep each
+// model's last bundled price unless models.dev now lists it (mirrors
+// retainRetiredModels in src/lib/modelsdev-pricing.ts).
+function retainRetiredModels(snapshot, previous, providerIDs) {
+  let retained = 0;
+  for (const providerID of providerIDs) {
+    const old = previous?.providers?.[providerID];
+    if (!old || typeof old !== "object") continue;
+    const target = (snapshot.providers[providerID] ??= {});
+    for (const [modelID, cost] of Object.entries(old)) {
+      if (!(modelID in target)) {
+        target[modelID] = cost;
+        retained++;
+      }
+    }
+  }
+  for (const providerID of Object.keys(snapshot.providers)) {
+    snapshot.providers[providerID] = sortObjectByKeys(snapshot.providers[providerID]);
+  }
+  snapshot.providers = sortObjectByKeys(snapshot.providers);
+  snapshot._meta.providers = Object.keys(snapshot.providers);
+  return retained;
+}
+
+async function readPrevious(path) {
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 async function main() {
   const providerIDs = parseProviderArgs(process.argv.slice(2));
   const api = await fetchModelsDevJson();
   const snapshot = buildSnapshot(api, providerIDs);
 
   const outPath = new URL("../src/data/modelsdev-pricing.min.json", import.meta.url);
+  const retained = retainRetiredModels(
+    snapshot,
+    await readPrevious(fileURLToPath(outPath)),
+    providerIDs,
+  );
   await writeFileAtomic(fileURLToPath(outPath), `${JSON.stringify(snapshot, null, 2)}\n`);
 
   console.log(
-    `Wrote ${outPath.pathname} with ${snapshot._meta.providers.length} providers and ${Object.values(snapshot.providers).reduce((sum, models) => sum + Object.keys(models).length, 0)} priced models.`,
+    `Wrote ${outPath.pathname} with ${snapshot._meta.providers.length} providers and ${Object.values(snapshot.providers).reduce((sum, models) => sum + Object.keys(models).length, 0)} priced models (${retained} retired models kept at their last price).`,
   );
 }
 

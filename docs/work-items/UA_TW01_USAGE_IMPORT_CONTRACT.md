@@ -21,10 +21,11 @@ Issue: [#68](https://github.com/thanhndv212/token-watcher/issues/68) (epic [#67]
 
 ### Machine identity
 
-`src/lib/machine-identity.ts` maps this host into Session Knowledge's registry at `~/session-trace-data/machines.json`, whose shape is `{ "<machineId>": { "hostname": "…" } }`.
+`src/lib/machine-identity.ts` maps this host into Session Knowledge's registry at `machines.json` in `$SESSION_TRACE_DIR` (default `~/session-trace-data/`), whose shape is `{ "<machineId>": { "hostname": "…" } }`.
 
-- **Matching.** Hostnames match exactly after lower-casing and removing a trailing `.local`.
-- **Unsafe entries never match.** An entry with an empty or missing hostname never matches. Session Knowledge's current capture adapters treat it as matching any host, which UA-SK-01 tracks as a bug.
+- **Native id first.** Session Knowledge keys the registry by the platform's machine id: `IOPlatformUUID` on macOS (read with `ioreg`), `/etc/machine-id` or `/var/lib/dbus/machine-id` on Linux. If this machine's native id is a registry key, that entry is used whatever its hostname, so a renamed host still maps. This was added on 2026-11-05 after real data showed a Mac renamed from `Thanhs-MacBook-Pro.local` to `Thanhs-MacBook-Pro-3.local`.
+- **Hostname fallback.** Otherwise hostnames match exactly after lower-casing and removing a trailing `.local`.
+- **Unsafe entries never match by hostname.** An entry with an empty or missing hostname never matches by hostname; it can map only through its own native id. Session Knowledge's current capture adapters treat an empty hostname as matching any host, which UA-SK-01 tracks as a bug.
 - **Unmapped hosts.** If there is no registry, the registry can't be read, no entry matches, or the match is ambiguous, the host keeps its hostname as its id. It is reported as unmapped with the reason, so two machines are never merged.
 - **Report surface.** `token-watcher sessions` prints a `Machine:` line. Its `--json` report has a `machine` object with `machineId`, `hostname`, `mapped` and `status`.
 

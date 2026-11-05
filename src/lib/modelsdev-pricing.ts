@@ -75,6 +75,12 @@ export interface PricingRefreshOptions {
   providerAllowlist?: string[];
   snapshotSelection?: PricingSnapshotSource;
   allowRefreshWhenSelectionBundled?: boolean;
+  /**
+   * Check again even if this process already checked once. Staleness, the
+   * attempt throttle and the bundled selection still apply, unlike `force`.
+   * Long-running processes (the desktop app) use this on a timer.
+   */
+  recheck?: boolean;
 }
 
 export interface PricingRefreshResult {
@@ -166,11 +172,13 @@ function normalizeSnapshot(raw: unknown): PricingSnapshot | null {
 
       if (typeof input === "number" && Number.isFinite(input)) buckets.input = input;
       if (typeof output === "number" && Number.isFinite(output)) buckets.output = output;
-      if (typeof cacheRead === "number" && Number.isFinite(cacheRead)) buckets.cache_read = cacheRead;
+      if (typeof cacheRead === "number" && Number.isFinite(cacheRead))
+        buckets.cache_read = cacheRead;
       if (typeof cacheWrite === "number" && Number.isFinite(cacheWrite)) {
         buckets.cache_write = cacheWrite;
       }
-      if (typeof reasoning === "number" && Number.isFinite(reasoning)) buckets.reasoning = reasoning;
+      if (typeof reasoning === "number" && Number.isFinite(reasoning))
+        buckets.reasoning = reasoning;
 
       if (Object.keys(buckets).length > 0) {
         models[modelId] = buckets;
@@ -328,12 +336,21 @@ function normalizeRefreshState(raw: unknown): PricingRefreshStateV1 | null {
   const lastSuccessAt = Number(obj.lastSuccessAt);
   const lastFailureAt = Number(obj.lastFailureAt);
 
-  if (Number.isFinite(lastAttemptAt) && lastAttemptAt > 0) out.lastAttemptAt = Math.trunc(lastAttemptAt);
-  if (Number.isFinite(lastSuccessAt) && lastSuccessAt > 0) out.lastSuccessAt = Math.trunc(lastSuccessAt);
-  if (Number.isFinite(lastFailureAt) && lastFailureAt > 0) out.lastFailureAt = Math.trunc(lastFailureAt);
+  if (Number.isFinite(lastAttemptAt) && lastAttemptAt > 0)
+    out.lastAttemptAt = Math.trunc(lastAttemptAt);
+  if (Number.isFinite(lastSuccessAt) && lastSuccessAt > 0)
+    out.lastSuccessAt = Math.trunc(lastSuccessAt);
+  if (Number.isFinite(lastFailureAt) && lastFailureAt > 0)
+    out.lastFailureAt = Math.trunc(lastFailureAt);
 
   if (typeof obj.lastResult === "string") {
-    const allowed = new Set(["success", "not_modified", "skipped_fresh", "skipped_throttled", "failed"]);
+    const allowed = new Set([
+      "success",
+      "not_modified",
+      "skipped_fresh",
+      "skipped_throttled",
+      "failed",
+    ]);
     if (allowed.has(obj.lastResult)) {
       out.lastResult = obj.lastResult as PricingRefreshStateV1["lastResult"];
     }
@@ -423,6 +440,46 @@ function buildSnapshotFromApi(
   };
 }
 
+/**
+ * Keep the last known price of models that models.dev no longer lists.
+ *
+ * models.dev drops retired models, but local history still holds sessions that
+ * used them; replacing the snapshot wholesale would leave those sessions
+ * unpriced. Fresh prices always win; earlier snapshots only fill gaps, and only
+ * for providers in the allowlist.
+ */
+export function retainRetiredModels(
+  fresh: PricingSnapshot,
+  previous: Array<PricingSnapshot | null | undefined>,
+  providerIDs: string[],
+): PricingSnapshot {
+  const allowed = new Set(providerIDs);
+  const providers: Record<string, Record<string, CostBuckets>> = {};
+  for (const [providerID, models] of Object.entries(fresh.providers)) {
+    providers[providerID] = { ...models };
+  }
+  for (const snapshot of previous) {
+    if (!snapshot) continue;
+    for (const [providerID, models] of Object.entries(snapshot.providers)) {
+      if (!allowed.has(providerID)) continue;
+      const target = (providers[providerID] ??= {});
+      for (const [modelID, cost] of Object.entries(models)) {
+        if (!(modelID in target)) target[modelID] = cost;
+      }
+    }
+  }
+  const sorted: Record<string, Record<string, CostBuckets>> = {};
+  for (const providerID of Object.keys(providers).sort((a, b) => a.localeCompare(b))) {
+    if (Object.keys(providers[providerID]).length > 0) {
+      sorted[providerID] = sortRecordByKeys(providers[providerID]);
+    }
+  }
+  return {
+    _meta: { ...fresh._meta, providers: Object.keys(sorted) },
+    providers: sorted,
+  };
+}
+
 function countPricedModels(snapshot: PricingSnapshot): number {
   let total = 0;
   for (const models of Object.values(snapshot.providers)) {
@@ -500,7 +557,7 @@ export async function maybeRefreshPricingSnapshot(
       };
     }
 
-    if (!force && PROCESS_REFRESH_CHECKED) {
+    if (!force && !opts.recheck && PROCESS_REFRESH_CHECKED) {
       return {
         attempted: false,
         updated: false,
@@ -539,7 +596,11 @@ export async function maybeRefreshPricingSnapshot(
       };
     }
 
-    if (!force && previousState.lastAttemptAt && nowMs - previousState.lastAttemptAt < minAttemptIntervalMs) {
+    if (
+      !force &&
+      previousState.lastAttemptAt &&
+      nowMs - previousState.lastAttemptAt < minAttemptIntervalMs
+    ) {
       return {
         attempted: false,
         updated: false,
@@ -568,13 +629,16 @@ export async function maybeRefreshPricingSnapshot(
 
       if (response.status === 304) {
         const baseSnapshot = runtimeSnapshotBeforeRefresh ?? ensureLoaded();
-        const refreshedSnapshot: PricingSnapshot = {
-          _meta: {
-            ...baseSnapshot._meta,
-            generatedAt: nowMs,
+        // Unchanged upstream, but still fill gaps from the bundled copy, so a
+        // runtime snapshot written before retirement-aware refreshes regains them.
+        const refreshedSnapshot = retainRetiredModels(
+          {
+            _meta: { ...baseSnapshot._meta, generatedAt: nowMs },
+            providers: baseSnapshot.providers,
           },
-          providers: baseSnapshot.providers,
-        };
+          [loadBundledSnapshotSync(opts.bootstrapSnapshotOverride)],
+          opts.providerAllowlist ?? DEFAULT_MODELSDEV_PROVIDERS,
+        );
         await writeJsonAtomic(snapshotPath, refreshedSnapshot, { trailingNewline: true });
         applySnapshotSelection({
           runtimeDirs,
@@ -608,10 +672,15 @@ export async function maybeRefreshPricingSnapshot(
       }
 
       const api = await response.json();
-      const snapshot = buildSnapshotFromApi(
-        api,
-        opts.providerAllowlist ?? DEFAULT_MODELSDEV_PROVIDERS,
-        nowMs,
+      const providerIDs = opts.providerAllowlist ?? DEFAULT_MODELSDEV_PROVIDERS;
+      const fresh = buildSnapshotFromApi(api, providerIDs, nowMs);
+      if (countPricedModels(fresh) === 0) {
+        throw new Error("Refusing to persist empty pricing snapshot from models.dev");
+      }
+      const snapshot = retainRetiredModels(
+        fresh,
+        [runtimeSnapshotBeforeRefresh, loadBundledSnapshotSync(opts.bootstrapSnapshotOverride)],
+        providerIDs,
       );
       if (countPricedModels(snapshot) === 0) {
         throw new Error("Refusing to persist empty pricing snapshot from models.dev");

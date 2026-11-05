@@ -342,6 +342,16 @@ token-watcher sessions --imports --json       # include imported activity and gi
 | Quota windows              | `quota-dashboard.db`, next to `opencode.db`; written by quota refreshes                                |
 | Session Knowledge imports  | `session-knowledge-imports.json`, next to `opencode.db`; override with `TOKEN_WATCHER_IMPORT_STORE`    |
 | Other machines (dashboard) | `opencode-quota/token-sync/` in the OpenCode config directory; override with `OPENCODE_QUOTA_SYNC_DIR` |
+| Machine registry           | Session Knowledge `machines.json` in `$SESSION_TRACE_DIR` (`~/session-trace-data/` by default)         |
+
+**Machine identity.** Sessions are tagged with the Session Knowledge machine id, so imports and synced files line up with native sessions. Token Watcher first looks up this machine's native id in `machines.json`: `IOPlatformUUID` on macOS, `/etc/machine-id` on Linux. It falls back to the hostname, so a renamed host (`Mac.local` becoming `Mac-3.local`) still maps. The desktop app reads `SESSION_TRACE_DIR` from your login shell when it is launched from Finder or the Dock.
+
+**Session Knowledge export.** Until Session Knowledge ships its own metadata export, `scripts/session-knowledge-to-usage-import.mjs` converts a trace store into contract 1 records. It writes metadata only: ids, times, model, message counts by role, and tokens where the trace reports them. Paths are hashed, and nothing from message content is written.
+
+```bash
+node scripts/session-knowledge-to-usage-import.mjs --out /tmp/sk-export.jsonl
+token-watcher sessions import /tmp/sk-export.jsonl
+```
 
 **Privacy.**
 
@@ -400,6 +410,23 @@ Alerts support two directions:
 - **Below threshold** — triggers when remaining quota falls below a minimum
 
 Manage alerts from the GUI **Alerts** tab or programmatically via the budget-alerts library API.
+
+## Pricing refresh
+
+Token costs use a [models.dev](https://models.dev) pricing snapshot. A copy is bundled with the package, and a newer runtime copy is kept in `opencode-quota/modelsdev-pricing.runtime.min.json` in the OpenCode cache directory (`~/.cache/opencode/` by default). The snapshot is refreshed when it is older than `pricingSnapshot.autoRefresh` days (default 7):
+
+- **Plugin and slash commands.** Checked once per OpenCode process, when the plugin starts. `/pricing_refresh` fetches now.
+- **Desktop app.** Checked 30 seconds after launch and then every 6 hours while it runs. The **Pricing** tab's refresh button fetches now.
+- **CLI and scheduled jobs.** `token-watcher pricing` shows the active snapshot and the last attempt. `token-watcher pricing refresh` fetches only when the snapshot is stale, so it is safe to run from cron or launchd; `--force` fetches now. It exits 1 when the fetch fails.
+
+Failed attempts are retried at most every 6 hours, and `pricingSnapshot.source: "bundled"` never fetches. Machines without the desktop app can schedule the CLI:
+
+```bash
+# crontab -e: check daily at 09:00 (needs token-watcher on cron's PATH)
+0 9 * * * token-watcher pricing refresh >/dev/null
+```
+
+Maintainers refresh the bundled copy with `pnpm run pricing:refresh` before a release.
 
 ## Custom Pricing
 
@@ -620,7 +647,7 @@ Existing `experimental.quotaToast` settings still work when no sidecar file exis
 | `onlyCurrentModel`            | `false`        | Filter quota rows to the current model/provider when that session selection can be resolved.                                                                                                                                                                                                       |
 | `showSessionTokens`           | `true`         | Show the `Session input/output tokens` section when session token data is available. When cached input is present, the section keeps the legacy `in/out` layout and appends cached input in parentheses next to the input amount.                                                                  |
 | `pricingSnapshot.source`      | `"auto"`       | Token pricing snapshot selection for `/tokens_*`: `auto`, `bundled`, or `runtime`.                                                                                                                                                                                                                 |
-| `pricingSnapshot.autoRefresh` | `7`            | Refresh stale local pricing data after this many days.                                                                                                                                                                                                                                             |
+| `pricingSnapshot.autoRefresh` | `7`            | Refresh pricing once it is this many days old ([details](#pricing-refresh)).                                                                                                                                                                                                                       |
 
 ### Toast settings
 
@@ -1061,7 +1088,7 @@ Start here when quota or token data looks wrong.
 | Popup toasts do not appear                             | Check `enableToast`, `showOnIdle`, `showOnQuestion`, and `showOnCompact`.                                                                                                                                                                               |
 | Announcement home notice does not appear               | Confirm `tui.json` includes `@thanhndv212/token-watcher`, restart OpenCode, then check `maintainerAnnouncements.enabled`, `maintainerAnnouncements.home`, and the active count in the `maintainer_announcements` section of `/quota_status`.            |
 | Token reports are empty                                | Start OpenCode once so `opencode.db` exists, then run a session with model usage.                                                                                                                                                                       |
-| Pricing looks stale                                    | Run `/pricing_refresh`.                                                                                                                                                                                                                                 |
+| Pricing looks stale                                    | Run `/pricing_refresh` or `token-watcher pricing refresh --force`.                                                                                                                                                                                      |
 | `/tokens_between` needs dates                          | Run `/tokens_between YYYY-MM-DD YYYY-MM-DD`; if your OpenCode build does not pass slash arguments to TUI commands, the dialog shows the expected format.                                                                                                |
 
 ### Provider troubleshooting
@@ -1237,7 +1264,7 @@ Run `/quota_status` and check pricing snapshot health plus OpenCode database pat
 | Symptom                                | Fix                                                                                                           |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `/tokens_*` is empty                   | Start OpenCode once so it creates `opencode.db`, then run a session with model usage.                         |
-| Pricing looks stale                    | Run `/pricing_refresh`.                                                                                       |
+| Pricing looks stale                    | Run `/pricing_refresh` or `token-watcher pricing refresh --force`.                                            |
 | Runtime pricing does not change output | Check `pricingSnapshot.source` in `opencode-quota/quota-toast.json`; `bundled` keeps packaged pricing active. |
 | Cursor model has unknown pricing       | Run `/pricing_refresh`; Cursor `auto` and `composer*` use bundled deterministic pricing.                      |
 

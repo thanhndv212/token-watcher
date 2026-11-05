@@ -86,7 +86,9 @@ describe("resolveLoginShellPath", () => {
     mockShellOutput("Welcome to my shell!\n\n/opt/homebrew/bin:/usr/bin:/bin");
     const { resolveLoginShellPath } = await import("../src/lib/fix-gui-path.js");
 
-    await expect(resolveLoginShellPath("/bin/zsh")).resolves.toBe("/opt/homebrew/bin:/usr/bin:/bin");
+    await expect(resolveLoginShellPath("/bin/zsh")).resolves.toBe(
+      "/opt/homebrew/bin:/usr/bin:/bin",
+    );
   });
 
   it("returns null when the shell invocation fails", async () => {
@@ -151,5 +153,43 @@ describe("fixGuiProcessPath", () => {
     await fixGuiProcessPath(env);
 
     expect(env.PATH).toBe("/usr/bin:/bin");
+  });
+
+  it("fills SESSION_TRACE_DIR from the login shell only when it is unset", async () => {
+    setPlatform("darwin");
+    execFileMock.mockImplementation((_file, args, _options, callback) => {
+      const cmd = (args as string[])[1]!;
+      const out = cmd.includes("SESSION_TRACE_DIR")
+        ? "banner\n/Users/me/Develop/traces"
+        : "/usr/bin";
+      (callback as (err: Error | null, stdout: string, stderr: string) => void)(null, out, "");
+      return {} as never;
+    });
+    const { fixGuiProcessPath } = await import("../src/lib/fix-gui-path.js");
+
+    const env: NodeJS.ProcessEnv = { PATH: "/bin" };
+    await fixGuiProcessPath(env);
+    expect(env.SESSION_TRACE_DIR).toBe("/Users/me/Develop/traces");
+
+    const preset: NodeJS.ProcessEnv = { PATH: "/bin", SESSION_TRACE_DIR: "/already/set" };
+    await fixGuiProcessPath(preset);
+    expect(preset.SESSION_TRACE_DIR).toBe("/already/set");
+  });
+
+  it("leaves SESSION_TRACE_DIR unset when the login shell has none", async () => {
+    setPlatform("darwin");
+    execFileMock.mockImplementation((_file, args, _options, callback) => {
+      const cmd = (args as string[])[1]!;
+      (callback as (err: Error | null, stdout: string, stderr: string) => void)(
+        null,
+        cmd.includes("SESSION_TRACE_DIR") ? "" : "/usr/bin",
+        "",
+      );
+      return {} as never;
+    });
+    const { fixGuiProcessPath } = await import("../src/lib/fix-gui-path.js");
+    const env: NodeJS.ProcessEnv = { PATH: "/bin" };
+    await fixGuiProcessPath(env);
+    expect("SESSION_TRACE_DIR" in env).toBe(false);
   });
 });

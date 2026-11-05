@@ -253,6 +253,35 @@ describe("pricing runtime refresh policy", () => {
     expect(persistedSnapshot.providers.openai["gpt-4o-mini"].input).toBe(0.15);
   });
 
+  it("restores retired bundled models into the runtime snapshot on 304", async () => {
+    const pricing = await loadPricingModule();
+    const runtimeDirs = await createTempRuntimeDirs();
+    const nowMs = 1_800_000_000_000;
+    // A runtime snapshot written before retirement-aware refreshes: it lost
+    // gpt-4o-mini, and its gpt-6 price differs from nothing in the bundle.
+    const runtime = createRuntimeSnapshot(nowMs - 4 * DAY_MS, 0.5);
+    runtime.providers.openai = {
+      "gpt-6": { input: 2, output: 8, cache_read: 0.2, cache_write: 1 },
+    };
+    await mkdir(join(runtimeDirs.cacheDir, "opencode-quota"), { recursive: true });
+    await writeFile(pricing.getRuntimePricingSnapshotPath(runtimeDirs), JSON.stringify(runtime));
+
+    const result = await pricing.maybeRefreshPricingSnapshot({
+      nowMs,
+      runtimeDirs,
+      fetchFn: vi.fn().mockResolvedValue(new Response(null, { status: 304 })),
+      force: true,
+      bootstrapSnapshotOverride: createBootstrapSnapshot(nowMs - 30 * DAY_MS),
+    });
+
+    expect(result.state.lastResult).toBe("not_modified");
+    const persisted = JSON.parse(
+      await readFile(pricing.getRuntimePricingSnapshotPath(runtimeDirs), "utf-8"),
+    );
+    expect(persisted.providers.openai["gpt-6"].input).toBe(2);
+    expect(persisted.providers.openai["gpt-4o-mini"].input).toBe(0.15);
+  });
+
   it("pins the bundled snapshot and skips runtime refresh attempts", async () => {
     const pricing = await loadPricingModule();
     const runtimeDirs = await createTempRuntimeDirs();
@@ -524,5 +553,129 @@ describe("pricing runtime refresh policy", () => {
     expect(thirdResult.attempted).toBe(false);
     expect(thirdResult.reason).toBe("already_checked_this_process");
     expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks a long-running process once the snapshot goes stale", async () => {
+    const pricing = await loadPricingModule();
+    const runtimeDirs = await createTempRuntimeDirs();
+    const nowMs = Date.UTC(2026, 10, 5);
+    const bootstrap = createBootstrapSnapshot(nowMs - DAY_MS);
+    const fetchFn = vi.fn().mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            openai: { models: { "gpt-4o-mini": { cost: { input: 0.3, output: 1 } } } },
+          }),
+          { status: 200 },
+        ),
+    );
+    const base = {
+      runtimeDirs,
+      fetchFn,
+      maxAgeMs: 3 * DAY_MS,
+      bootstrapSnapshotOverride: bootstrap,
+    };
+
+    expect((await pricing.maybeRefreshPricingSnapshot({ ...base, nowMs })).reason).toBe("fresh");
+    // Without recheck a second check in the same process is skipped, even when stale.
+    const later = nowMs + 5 * DAY_MS;
+    expect((await pricing.maybeRefreshPricingSnapshot({ ...base, nowMs: later })).reason).toBe(
+      "already_checked_this_process",
+    );
+    expect(fetchFn).not.toHaveBeenCalled();
+
+    // A recheck while still fresh fetches nothing.
+    const freshRecheck = await pricing.maybeRefreshPricingSnapshot({
+      ...base,
+      nowMs: nowMs + DAY_MS,
+      recheck: true,
+    });
+    expect(freshRecheck.reason).toBe("fresh");
+    expect(fetchFn).not.toHaveBeenCalled();
+
+    const staleRecheck = await pricing.maybeRefreshPricingSnapshot({
+      ...base,
+      nowMs: later,
+      recheck: true,
+    });
+    expect(staleRecheck).toMatchObject({ attempted: true, updated: true });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+
+    // The bundled selection is still never refreshed, recheck or not.
+    const bundled = await pricing.maybeRefreshPricingSnapshot({
+      ...base,
+      nowMs: later + 5 * DAY_MS,
+      recheck: true,
+      snapshotSelection: "bundled",
+    });
+    expect(bundled.reason).toBe("selection_bundled");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the last price of models models.dev no longer lists", async () => {
+    const pricing = await loadPricingModule();
+    const runtimeDirs = await createTempRuntimeDirs();
+    const nowMs = Date.UTC(2026, 10, 5);
+    // The bootstrap prices gpt-4o-mini at 0.15; models.dev now lists only gpt-6.
+    const fetchFn = vi.fn().mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            openai: { models: { "gpt-6": { cost: { input: 2, output: 8 } } } },
+            deepseek: { models: { "deepseek-v4": { cost: { input: 1, output: 2 } } } },
+          }),
+          { status: 200 },
+        ),
+    );
+
+    const result = await pricing.maybeRefreshPricingSnapshot({
+      nowMs,
+      runtimeDirs,
+      fetchFn,
+      force: true,
+      bootstrapSnapshotOverride: createBootstrapSnapshot(nowMs - 30 * DAY_MS),
+    });
+    expect(result).toMatchObject({ attempted: true, updated: true });
+
+    const written = JSON.parse(
+      await readFile(pricing.getRuntimePricingSnapshotPath(runtimeDirs), "utf8"),
+    );
+    expect(Object.keys(written.providers.openai).sort()).toEqual(["gpt-4o-mini", "gpt-6"]);
+    expect(written.providers.openai["gpt-4o-mini"].input).toBe(0.15);
+    // Providers outside the allowlist are neither fetched nor retained.
+    expect(written.providers.deepseek).toBeUndefined();
+    expect(pricing.lookupCost("openai", "gpt-4o-mini")?.input).toBe(0.15);
+    expect(pricing.lookupCost("openai", "gpt-6")?.input).toBe(2);
+  });
+});
+
+describe("retainRetiredModels", () => {
+  it("prefers fresh prices and fills gaps from earlier snapshots in order", async () => {
+    const { retainRetiredModels } = await loadPricingModule();
+    const meta = { source: "t", generatedAt: 3, providers: ["openai"], units: "USD per 1M tokens" };
+    const merged = retainRetiredModels(
+      { _meta: meta, providers: { openai: { a: { input: 3 } } } },
+      [
+        {
+          _meta: { ...meta, generatedAt: 2 },
+          providers: { openai: { a: { input: 2 }, b: { input: 2 } } },
+        },
+        null,
+        {
+          _meta: { ...meta, generatedAt: 1 },
+          providers: {
+            openai: { b: { input: 1 }, c: { input: 1 } },
+            xai: { g: { input: 1 } },
+            other: { x: { input: 1 } },
+          },
+        },
+      ],
+      ["openai", "xai"],
+    );
+    expect(merged.providers).toEqual({
+      openai: { a: { input: 3 }, b: { input: 2 }, c: { input: 1 } },
+      xai: { g: { input: 1 } },
+    });
+    expect(merged._meta).toMatchObject({ generatedAt: 3, providers: ["openai", "xai"] });
   });
 });
