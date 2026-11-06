@@ -20,6 +20,7 @@ These are the completed items with dedicated records. Other completed items have
 ## Delivery and provenance
 
 - [Token Watcher rename and migration](work-items/TOKEN_WATCHER_RENAME.md): package/app identity, preserved user data and renamed release acceptance.
+- [Token Watcher 3.11.0 release notes](RELEASE_NOTES_3.11.0.md): first stable release, adding session usage analysis, Codex and cross-machine sync.
 - [Token Watcher 3.11.0-rc.3 release notes](RELEASE_NOTES_3.11.0-rc.3.md): renamed desktop and package distribution.
 
 - [Upstream delivery plan](UPSTREAM_DELIVERY_PLAN.md): authoritative work-item status, dependencies and acceptance/release gates.
