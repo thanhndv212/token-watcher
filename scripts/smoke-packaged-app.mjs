@@ -192,26 +192,30 @@ try {
     return result.result.value;
   };
   await wait(
-    () => evaluate("!!window.quotaApi && document.querySelectorAll('.tab-btn').length===7"),
-    "preload and seven tabs incl. sessions",
+    () => evaluate("!!window.quotaApi && document.querySelectorAll('.tab-btn').length===6"),
+    "preload and six tabs incl. sessions",
   );
   assert.equal(await evaluate("window.quotaApi.app.getVersion()"), pkg.version);
   assert.deepEqual((await evaluate("window.quotaApi.config.quota()")).config.enabledProviders, []);
   await evaluate("window.quotaApi.quota.fetch(true)");
   const tabs = [];
-  for (let index = 0; index < 7; index++) {
+  // Tab order: Overview, Quota (incl. history), Usage, Sessions, Alerts, Settings.
+  const tabExpectations = [
+    ["Quota headroom"],
+    [nativeNotices ? "Confirmed Reset Events" : "No quota history yet"],
+    ["Token mix"],
+    ["means the value is not available, not zero"],
+    ["No budget alerts configured"],
+    ["Pricing Snapshot", "Create Key Store"],
+  ];
+  for (let index = 0; index < tabExpectations.length; index++) {
     await evaluate(`document.querySelectorAll('.tab-btn')[${index}].click()`);
-    const expected = [
-      "Dashboard",
-      "Input Tokens",
-      "No budget alerts configured",
-      "Pricing Snapshot",
-      "Create Key Store",
-      nativeNotices ? "Confirmed Reset Events" : "No quota history yet",
-      "means the value is not available, not zero",
-    ][index];
+    const expected = tabExpectations[index];
     await wait(
-      () => evaluate(`document.body.innerText.includes(${JSON.stringify(expected)})`),
+      () =>
+        evaluate(
+          `${JSON.stringify(expected)}.every((text) => document.body.innerText.includes(text))`,
+        ),
       `tab ${index} content`,
     );
     tabs.push(await evaluate("document.body.innerText.slice(0,2000)"));

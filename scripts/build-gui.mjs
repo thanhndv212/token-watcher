@@ -2,7 +2,7 @@
  * Build script for the Electron menubar GUI app.
  *
  * This script copies renderer files (HTML, CSS, JS) to dist/gui/renderer/.
- * The renderer itself is plain vanilla JS/DOM (src/gui/renderer/app.js) —
+ * The renderer itself is plain vanilla JS/DOM (src/gui/renderer/) —
  * no framework, no bundler needed.
  *
  * Run: node scripts/build-gui.mjs
@@ -24,20 +24,15 @@ async function main() {
   console.log("Building GUI renderer...");
 
   await mkdir(rendererDist, { recursive: true });
-  await mkdir(join(rendererDist, "styles"), { recursive: true });
 
   // Electron requires an .mjs extension to load an ESM preload. The compiler
   // emits .js, which Electron would otherwise interpret as CommonJS.
   await cp(join(distDir, "preload.js"), join(distDir, "preload.mjs"));
 
-  console.log("  Copying renderer HTML...");
-  await cp(join(rendererSrc, "index.html"), join(rendererDist, "index.html"));
-
-  console.log("  Copying renderer JS...");
-  await cp(join(rendererSrc, "app.js"), join(rendererDist, "app.js"));
-
-  console.log("  Copying CSS...");
-  await cp(join(rendererSrc, "styles", "app.css"), join(rendererDist, "styles", "app.css"));
+  // index.html loads lib/*.js, views/*.js and app.js as classic scripts, so the
+  // whole renderer tree is copied as-is.
+  console.log("  Copying renderer (HTML, CSS, lib/, views/, app.js)...");
+  await cp(rendererSrc, rendererDist, { recursive: true });
 
   console.log("GUI renderer build complete!");
   console.log(`  Output: ${rendererDist}`);
