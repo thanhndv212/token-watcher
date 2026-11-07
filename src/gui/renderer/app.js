@@ -76,7 +76,7 @@
   function renderShell() {
     clear(root);
     titleEl = el("h1", { className: "app-title" }, view(S.tab).title);
-    statusEl = el("span", { className: "app-status", role: "status" });
+    statusEl = el("span", { className: "app-status quota-refresh-status", role: "status" });
     const header = el(
       "header",
       { className: "app-header" },
