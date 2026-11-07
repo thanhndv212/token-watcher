@@ -49,6 +49,7 @@ import { startPricingAutoRefresh, type PricingAutoRefresh } from "./pricing-auto
 import * as quotaIpc from "./ipc/quota.js";
 import * as tokensIpc from "./ipc/tokens.js";
 import * as sessionsIpc from "./ipc/sessions.js";
+import * as timelineIpc from "./ipc/usage-timeline.js";
 import * as pricingIpc from "./ipc/pricing.js";
 import * as alertsIpc from "./ipc/alerts.js";
 import * as apikeysIpc from "./ipc/apikeys.js";
@@ -289,6 +290,10 @@ function registerIpcHandlers(initialConfig: StandaloneQuotaConfig, guiConfig: Gu
 
   ipcMain.handle("tokens:sync-export-and-push", async () => {
     return tokensIpc.exportToSyncAndPush();
+  });
+
+  ipcMain.handle("tokens:timeline", async (_event, params: unknown) => {
+    return timelineIpc.queryUsageTimeline(params);
   });
 
   ipcMain.handle("tokens:merged", async () => {
