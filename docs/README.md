@@ -48,6 +48,7 @@ These are the completed items with dedicated records. Other completed items have
 - [UA-TW-05 quota window usage record](work-items/UA_TW05_QUOTA_WINDOW_USAGE.md): complete; `token-watcher sessions --windows` places session tokens on recorded provider quota windows.
 - [UA-TW-06 cross-machine sync record](work-items/UA_TW06_CROSS_MACHINE_SYNC.md): complete; `token-sync` format version 3 carries Claude Code, OpenCode and Codex sessions per machine id and counts each session once.
 - [UA-TW-07 GUI session views record](work-items/UA_TW07_GUI_SESSION_VIEWS.md): complete; desktop Sessions tab, packaged-app acceptance and README data locations, privacy, limits and rollback.
+- [GUI-04 analytical desktop redesign](work-items/GUI04_ANALYTICAL_REDESIGN.md): in progress, implemented on a branch that has not been merged yet. Each tab is rebuilt around analytical charts, with a new local usage-timeline IPC and no predictive quota claims.
 - [Pricing refresh record](work-items/PRICING_AUTO_REFRESH.md): complete; refreshed models.dev snapshot that keeps retired models, desktop re-checks every 6 hours and `token-watcher pricing` for scheduled jobs.
 
 - [CUS-02 durable local estimate record](work-items/CUS02_DURABLE_LOCAL_ESTIMATES.md): complete in PR #55 with green main CI; native journal, pricing coverage and installed CLI/Electron evidence.

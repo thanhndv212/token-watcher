@@ -38,6 +38,8 @@ const quotaApi = {
     syncExport: () => ipcRenderer.invoke("tokens:sync-export"),
     syncExportAndPush: () => ipcRenderer.invoke("tokens:sync-export-and-push"),
     merged: () => ipcRenderer.invoke("tokens:merged"),
+    timeline: (params: { days: number; tzOffsetMinutes: number }) =>
+      ipcRenderer.invoke("tokens:timeline", params),
   },
 
   // ── Session usage ──────────────────────────────────

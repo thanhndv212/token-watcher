@@ -1,469 +1,422 @@
 /**
- * Token Watcher — Menubar App Renderer
+ * Token Watcher — desktop renderer shell.
  *
- * Self-contained vanilla JavaScript application.
- * Uses the quotaApi exposed via Electron contextBridge.
- * No framework dependencies — just DOM APIs.
+ * Vanilla JS on `window.quotaApi` (contextBridge). This file owns state, data
+ * loading, navigation and the shared modals; each tab lives in views/*.js and
+ * registers itself on `TW.views`. Everything shown is computed locally from
+ * quota fetches and local usage stores; nothing here calls a model.
  */
-
 (function () {
   "use strict";
+  const TW = window.TW;
+  const { el, clear, fmt, toast } = TW;
+  const ui = TW.ui;
+  const DAY_MS = 86_400_000;
 
   const api = window.quotaApi;
   if (!api) {
     document.getElementById("root").innerHTML =
-      '<div class="empty-state"><div class="icon">⚠</div><div class="text">quotaApi not available</div><div class="hint">This app must run inside the Electron shell.</div></div>';
+      '<div class="empty-state"><div class="empty-text">quotaApi not available</div><div class="empty-hint">This app must run inside the Electron shell.</div></div>';
     return;
   }
 
-  // ===========================================================================
-  // State
-  // ===========================================================================
-  let activeTab = 0;
-  let quotaProviderFilter = "all";
-  let quotaData = null;
-  let tokenData = null;
-  let alerts = [];
-  let budgetState = null;
-  let historyReadError = null;
-  let pricingOverrides = [];
-  let pricingSnapshot = null;
-  let apikeyStatus = null;
-  let isLoading = false;
-  let toastTimer = null;
-  let showAllModels = false;
-  let theme = "light";
-  let showMergedTokens = false;
-  let mergedTokenData = null;
-  let historyProviders = [];
-  let historyProvidersLoaded = false;
-  let historyProvider = null;
-  let historyDays = 7;
-  let historyQuota = [];
-  let historyAccounting = [];
-  let historyAccount = "all";
-  let historyWindow = null;
-  let resetEvents = [];
-  let resetStatus = "";
-  let historyResets = [];
-  let historySourceModels = [];
-  let historyGroupBy = "All";
-  let historyBurningSessions = [];
-  let historyBurningWindowLabel = "";
-  let sessionView = null;
-  let sessionViewError = null;
-  let sessionDays = 28;
-  let sessionWindows = false;
-  let sessionImports = false;
-
-  // ===========================================================================
-  // DOM helpers
-  // ===========================================================================
-  const $ = (sel, parent) => (parent || document).querySelector(sel);
-  const $$ = (sel, parent) => [...(parent || document).querySelectorAll(sel)];
-  const el = (tag, attrs, ...children) => {
-    const e = document.createElement(tag);
-    if (attrs)
-      Object.entries(attrs).forEach(([k, v]) => {
-        if (k.startsWith("on")) e.addEventListener(k.slice(2).toLowerCase(), v);
-        else if (k === "className") e.className = v;
-        else if (k === "style" && typeof v === "object") Object.assign(e.style, v);
-        else if (k === "disabled") {
-          if (v) e.setAttribute("disabled", "");
-        } else e.setAttribute(k, v);
-      });
-    children.forEach((c) => {
-      if (c == null) return;
-      e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
-    });
-    return e;
+  // ── State ──────────────────────────────────────────────────────────────
+  const S = {
+    tab: "overview",
+    quota: null,
+    quotaFilter: "all",
+    /** days → { data, at, loading, error } */
+    timelines: {},
+    usageDays: 30,
+    usageMetric: "tokens",
+    usageScope: "local",
+    /** days → { aggregate, at } (tokens.query over the same range, for top sessions) */
+    usageAggregates: {},
+    merged: null,
+    mergedLoading: false,
+    alerts: [],
+    budget: null,
+    pricing: { overrides: [], snapshot: null, loaded: false, refreshing: false },
+    apikeys: null,
+    version: null,
+    theme: "system",
+    history: {
+      providers: [],
+      providersLoaded: false,
+      provider: null,
+      account: "all",
+      window: null,
+      days: 7,
+      quota: [],
+      accounting: [],
+      resets: [],
+      events: [],
+      status: "",
+      sourceModels: [],
+      sourceFilter: "all",
+      burning: [],
+      error: null,
+      loading: false,
+    },
+    sessions: { view: null, error: null, days: 28, windows: false, imports: false, loading: false },
   };
 
-  function clear(el) {
-    while (el.firstChild) el.removeChild(el.firstChild);
-  }
-
-  function formatNumber(n) {
-    if (n == null) return "0";
-    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-    if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
-    return String(Math.round(n));
-  }
-
-  function showToast(msg, type) {
-    const existing = $(".toast");
-    if (existing) existing.remove();
-    if (toastTimer) clearTimeout(toastTimer);
-    const toast = el(
-      "div",
-      { className: "toast " + (type === "error" ? "toast-error" : "toast-success") },
-      msg,
-    );
-    document.body.appendChild(toast);
-    toastTimer = setTimeout(() => toast.remove(), 3000);
-  }
-
-  // Global Escape key handler – closes the topmost modal overlay
-  document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape") return;
-    const overlays = $$(".modal-overlay");
-    if (overlays.length > 0) overlays[overlays.length - 1].remove();
-  });
-
-  // ===========================================================================
-  // API calls
-  // ===========================================================================
-  async function refreshQuota() {
-    setLoading(true);
-    try {
-      receiveQuotaSnapshot(await api.quota.fetch(true));
-    } catch (e) {
-      showToast(e.message, "error");
-    }
-    setLoading(false);
-    renderContent();
-  }
-
-  function receiveQuotaSnapshot(snapshot) {
-    if (quotaData && snapshot.revision < quotaData.revision) return;
-    quotaData = snapshot;
-    if (activeTab === 0) renderContent();
-  }
-
-  async function fetchTokens(explicitWindow) {
-    setLoading(true);
-    try {
-      const window = explicitWindow || "week";
-      tokenData = await api.tokens.query({ window });
-    } catch (e) {
-      showToast(e.message, "error");
-    }
-    setLoading(false);
-    renderTokenUsage();
-  }
-
-  async function fetchMergedTokens() {
-    setLoading(true);
-    try {
-      mergedTokenData = await api.tokens.merged();
-      showMergedTokens = true;
-    } catch (e) {
-      showToast(e.message, "error");
-    }
-    setLoading(false);
-    renderTokenUsage();
-  }
-
-  async function loadAlerts() {
-    try {
-      alerts = await api.alerts.list();
-      receiveBudgetState(await api.alerts.state());
-    } catch (e) {
-      /* ignore */
-    }
-    if (activeTab === 2) renderAlerts();
-  }
-
-  function receiveBudgetState(state) {
-    if (budgetState && state.revision < budgetState.revision) return;
-    budgetState = state;
-    if (state.evaluatedAt !== null) alerts = state.rules;
-    if (activeTab === 2) renderAlerts();
-  }
-
-  async function loadPricing() {
-    try {
-      const data = await api.pricing.list();
-      pricingOverrides = data.overrides || [];
-      pricingSnapshot = data.snapshot;
-    } catch (e) {
-      /* ignore */
-    }
-    if (activeTab === 3) renderPricing();
-  }
-
-  async function loadApikeyStatus() {
-    try {
-      apikeyStatus = await api.apikeys.status();
-    } catch (e) {
-      /* ignore */
-    }
-    if (activeTab === 4) renderApiKeys();
-  }
-
-  async function loadHistory() {
-    historyReadError = null;
-    try {
-      if (!historyProvidersLoaded) {
-        historyProviders = await api.dashboardHistory.listProviders();
-        historyProvidersLoaded = true;
-        if (!historyProvider && historyProviders.length > 0) historyProvider = historyProviders[0];
-      }
-
-      resetEvents = api.resets ? await api.resets.events() : [];
-      resetStatus = api.resets ? await api.resets.status() : "";
-      if (historyProvider) {
-        const [quota, resets, accounting] = await Promise.all([
-          api.dashboardHistory.quotaHistory(historyProvider, historyDays),
-          api.dashboardHistory.weeklyResets(
-            historyProvider,
-            Math.max(1, Math.ceil(historyDays / 7)),
-          ),
-          api.dashboardHistory.accountingHistory(historyProvider, historyDays),
-        ]);
-        historyQuota = quota || [];
-        historyResets = resets || [];
-        historyAccounting = accounting || [];
-      } else {
-        historyQuota = [];
-        historyResets = [];
-        historyAccounting = [];
-      }
-
-      // Source-grouped model cost breakdown over the selected range - reuses
-      // the exact same aggregation + source labels as the Tokens tab, rather
-      // than the DB-backed (canonical-provider-only) breakdown, so "sort by
-      // source" (opencode/claudecode/copilot/...) actually has something to
-      // sort by.
-      const untilMs = Date.now();
-      const sinceMs = untilMs - historyDays * 24 * 60 * 60 * 1000;
-      const usage = await api.tokens.query({ sinceMs, untilMs });
-      historySourceModels = (usage.aggregate && usage.aggregate.bySourceModel) || [];
-
-      await loadHistoryBurningSessions();
-    } catch (e) {
-      historyReadError = "History unavailable: local observations could not be read";
-    }
-    if (activeTab === 5) renderHistory();
-  }
-
-  function findActiveBurnWindow() {
-    // A local rolling lookback, never presented as a provider's fixed window.
-    return { sinceMs: Date.now() - 5 * 60 * 60 * 1000, label: "Last 5 Hours" };
-  }
-
-  async function loadHistoryBurningSessions() {
-    const windowInfo = findActiveBurnWindow();
-    historyBurningWindowLabel = windowInfo.label;
-    try {
-      const usage = await api.tokens.query({ sinceMs: windowInfo.sinceMs, untilMs: Date.now() });
-      historyBurningSessions = (usage.aggregate && usage.aggregate.bySession) || [];
-    } catch (e) {
-      historyBurningSessions = [];
-    }
-  }
-
-  function setLoading(v) {
-    isLoading = v;
-    const btn = $(".btn-refresh");
-    if (btn) {
-      btn.textContent = v ? "⟳ Refreshing..." : "⟳ Refresh";
-      btn.disabled = v;
-    }
-  }
-
-  // ===========================================================================
-  // Render engine
-  // ===========================================================================
+  // ── Rendering ──────────────────────────────────────────────────────────
   const root = document.getElementById("root");
+  let contentEl = null;
+  let titleEl = null;
+  let statusEl = null;
 
-  function render() {
+  const TAB_ORDER = ["overview", "quota", "usage", "sessions", "alerts", "settings"];
+
+  function view(key) {
+    return TW.views[key];
+  }
+
+  function renderShell() {
     clear(root);
-    root.appendChild(renderHeader());
-    root.appendChild(renderTabNav());
-    const content = el("div", {
-      style: { flex: "1", overflow: "hidden", display: "flex", flexDirection: "column" },
-    });
-    root.appendChild(content);
-
-    const contentArea = el("div", {
-      className: "tab-content",
-      style: { flex: "1", overflowY: "auto" },
-    });
-    content.appendChild(contentArea);
-
-    renderContentInto(contentArea);
-  }
-
-  function renderContentInto(container) {
-    clear(container);
-    switch (activeTab) {
-      case 0:
-        renderDashboardInto(container);
-        break;
-      case 1:
-        renderTokenUsageInto(container);
-        break;
-      case 2:
-        renderAlertsInto(container);
-        break;
-      case 3:
-        renderPricingInto(container);
-        break;
-      case 4:
-        renderApiKeysInto(container);
-        break;
-      case 5:
-        renderHistoryInto(container);
-        break;
-      case 6:
-        renderSessionsInto(container);
-        break;
-    }
-  }
-
-  function renderContent() {
-    updateTabNavHighlight();
-    renderContentInto($(".tab-content"));
-  }
-
-  function updateTabNavHighlight() {
-    const btns = $$(".tab-btn");
-    btns.forEach((btn, i) => {
-      if (i === activeTab) {
-        btn.classList.add("active");
-        if (btn.scrollIntoView) btn.scrollIntoView({ block: "nearest", inline: "nearest" });
-      } else btn.classList.remove("active");
-    });
-  }
-
-  // ===========================================================================
-  // Header
-  // ===========================================================================
-  function renderHeader() {
-    const themeLabel = theme === "dark" ? "☀ Light" : "☾ Dark";
-    const themeTitle = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
-    return el(
-      "div",
+    titleEl = el("h1", { className: "app-title" }, view(S.tab).title);
+    statusEl = el("span", { className: "app-status quota-refresh-status", role: "status" });
+    const header = el(
+      "header",
       { className: "app-header" },
-      el("h1", {}, getActiveTabTitle()),
+      el(
+        "div",
+        { className: "brand" },
+        el("span", { className: "brand-mark", "aria-hidden": "true" }, "◔"),
+        el("span", { className: "brand-name" }, "Token Watcher"),
+      ),
+      titleEl,
+      statusEl,
       el(
         "div",
         { className: "header-actions" },
         el(
           "button",
-          { className: "btn btn-small btn-refresh", onClick: refreshQuota },
+          {
+            className: "btn btn-small btn-refresh",
+            onClick: refreshAll,
+            title: "Refresh quota and this view",
+          },
           "⟳ Refresh",
         ),
         el(
           "button",
-          { className: "btn btn-small", onClick: toggleTheme, title: themeTitle },
-          themeLabel,
+          {
+            className: "btn-icon",
+            onClick: () => api.app.quit(),
+            title: "Quit",
+            "aria-label": "Quit",
+          },
+          "✕",
         ),
-        el("button", { className: "btn-icon", onClick: () => api.app.quit(), title: "Quit" }, "✕"),
       ),
     );
-  }
-
-  // ===========================================================================
-  // Tab Nav
-  // ===========================================================================
-  const TABS = [
-    { label: "◉ Dashboard", title: "Dashboard" },
-    { label: "⬡ Tokens", title: "Token Usage" },
-    { label: "⚠ Alerts", title: "Budget Alerts" },
-    { label: "$ Pricing", title: "Pricing" },
-    { label: "🔑 API Keys", title: "API Keys" },
-    { label: "📈 History", title: "Quota History" },
-    { label: "☰ Sessions", title: "Session Usage" },
-  ];
-
-  function getActiveTabTitle() {
-    return TABS[activeTab]?.title || "Quota Monitor";
-  }
-
-  function renderTabNav() {
-    const nav = el("div", { className: "tab-nav" });
-    TABS.forEach((tab, i) => {
-      nav.appendChild(
+    const nav = el(
+      "nav",
+      { className: "tab-nav", "aria-label": "Sections" },
+      TAB_ORDER.map((key) =>
         el(
           "button",
           {
-            className: "tab-btn" + (i === activeTab ? " active" : ""),
-            onClick: () => {
-              activeTab = i;
-              updateHeaderTitle();
-              renderContent();
-              if (i === 1) fetchTokens();
-              if (i === 2) loadAlerts();
-              if (i === 3) loadPricing();
-              if (i === 4) loadApikeyStatus();
-              if (i === 5) loadHistory();
-              if (i === 6) loadSessions();
-            },
+            className: "tab-btn" + (key === S.tab ? " active" : ""),
+            dataset: { tab: key },
+            "aria-current": key === S.tab ? "page" : null,
+            onClick: () => go(key),
           },
-          tab.label,
+          el("span", { className: "tab-icon", "aria-hidden": "true" }, view(key).icon),
+          el("span", { className: "tab-label" }, view(key).label),
+        ),
+      ),
+    );
+    contentEl = el("main", { className: "content" });
+    root.appendChild(
+      el("div", { className: "app" }, header, el("div", { className: "app-body" }, nav, contentEl)),
+    );
+    updateStatus();
+    renderView();
+  }
+
+  function renderView() {
+    if (!contentEl) return;
+    const scroll = contentEl.scrollTop;
+    TW.hideTooltip();
+    clear(contentEl);
+    const page = el("div", { className: "page page-" + S.tab });
+    try {
+      view(S.tab).render(ctx, page);
+    } catch (err) {
+      console.error(err);
+      page.appendChild(
+        ui.notice(
+          "critical",
+          "This view failed to render: " + (err && err.message ? err.message : String(err)),
         ),
       );
-    });
-    return nav;
+    }
+    contentEl.appendChild(page);
+    contentEl.scrollTop = scroll;
   }
 
-  function updateHeaderTitle() {
-    const h1 = $(".app-header h1");
-    if (h1) h1.textContent = getActiveTabTitle();
+  /** Re-render only when the given tab(s) are on screen. */
+  function rerender(...tabs) {
+    if (!tabs.length || tabs.includes(S.tab)) renderView();
   }
 
-  // ===========================================================================
-  // Dashboard
-  // ===========================================================================
-
-  // Entries that share the same `group` (e.g. "Claude", "OpenCode Go (dvtn)")
-  // are rendered as one card with stacked mini-bars, same as OpenCode's own
-  // grouped quota display, instead of one full-width card per window.
-  const WINDOW_TAG_ORDER = { "5h": 0, hourly: 0, daily: 1, weekly: 2, monthly: 3, yearly: 4 };
-
-  // Countdown text for a reset timestamp, e.g. "2d 4h", "3h 12m", "45m".
-  // Returns "" when there is no timestamp or it has already passed.
-  function formatResetCountdown(resetTimeIso) {
-    if (!resetTimeIso) return "";
-    const diff = new Date(resetTimeIso).getTime() - Date.now();
-    if (!Number.isFinite(diff) || diff <= 0) return "";
-    const totalMinutes = Math.max(1, Math.floor(diff / 60000));
-    const d = Math.floor(totalMinutes / 1440);
-    const h = Math.floor((totalMinutes % 1440) / 60);
-    const m = totalMinutes % 60;
-    if (d > 0) return d + "d " + h + "h";
-    if (h > 0) return h + "h " + m + "m";
-    return m + "m";
+  function go(key, opts) {
+    if (!TW.views[key]) return;
+    const changed = key !== S.tab;
+    S.tab = key;
+    for (const btn of root.querySelectorAll(".tab-btn")) {
+      const active = btn.dataset.tab === key;
+      btn.classList.toggle("active", active);
+      if (active) btn.setAttribute("aria-current", "page");
+      else btn.removeAttribute("aria-current");
+    }
+    if (titleEl) titleEl.textContent = view(key).title;
+    if (changed && contentEl) contentEl.scrollTop = 0;
+    renderView();
+    if (view(key).enter) view(key).enter(ctx, opts || {});
   }
 
-  // A span whose countdown text is kept current by tickResetCountdowns().
-  function resetCountdownEl(resetTimeIso, attrs) {
-    const text = formatResetCountdown(resetTimeIso);
-    const span = el("span", {
-      ...attrs,
-      title: resetTimeIso ? "Resets " + new Date(resetTimeIso).toLocaleString() : "",
-    });
-    if (resetTimeIso) span.dataset.resetAt = resetTimeIso;
-    span.textContent = text ? "⟳ " + text : "";
-    return span;
+  function quotaStatusText() {
+    const q = S.quota;
+    if (!q) return "Waiting for quota";
+    const hm = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (q.fetching) return "Refreshing quota…";
+    if (q.previousObservation)
+      return (
+        "Showing previous observation" +
+        (q.lastObservationAt ? " from " + hm(q.lastObservationAt) : "")
+      );
+    if (q.stale) return "Some quota is unavailable";
+    if (q.lastSuccessAt) return "Updated " + hm(q.lastSuccessAt);
+    return "Waiting for quota";
   }
 
-  function tickResetCountdowns() {
-    for (const span of $$("[data-reset-at]")) {
-      const text = formatResetCountdown(span.dataset.resetAt);
-      span.textContent = text ? "⟳ " + text : "";
+  function updateStatus() {
+    if (!statusEl) return;
+    statusEl.textContent = quotaStatusText();
+    statusEl.classList.toggle(
+      "is-stale",
+      !!(S.quota && (S.quota.stale || S.quota.previousObservation)),
+    );
+  }
+
+  function setBusy(busy) {
+    const btn = root.querySelector(".btn-refresh");
+    if (!btn) return;
+    btn.disabled = busy;
+    btn.textContent = busy ? "⟳ Refreshing…" : "⟳ Refresh";
+  }
+
+  // ── Loaders ────────────────────────────────────────────────────────────
+  async function refreshQuota() {
+    try {
+      receiveQuota(await api.quota.fetch(true));
+    } catch (e) {
+      toast(e.message, "error");
     }
   }
 
-  function accountSubtitleEl(account) {
-    return el(
-      "span",
-      {
-        className: "card-subtitle card-account",
-        title: account,
-      },
-      account,
-    );
+  async function refreshAll() {
+    setBusy(true);
+    const tasks = [refreshQuota()];
+    const v = view(S.tab);
+    if (v.refresh) tasks.push(v.refresh(ctx));
+    await Promise.allSettled(tasks);
+    setBusy(false);
+    renderView();
   }
+
+  function receiveQuota(snapshot) {
+    if (!snapshot) return;
+    if (S.quota && snapshot.revision < S.quota.revision) return;
+    S.quota = snapshot;
+    updateStatus();
+    rerender("overview", "quota");
+  }
+
+  async function loadTimeline(days, force) {
+    const cur = S.timelines[days];
+    if (cur && (cur.loading || (!force && cur.data && Date.now() - cur.at < 60_000))) return cur;
+    S.timelines[days] = { ...(cur || {}), loading: true, error: null };
+    try {
+      const data = await api.tokens.timeline({
+        days,
+        tzOffsetMinutes: new Date().getTimezoneOffset(),
+      });
+      S.timelines[days] = { data, at: Date.now(), loading: false, error: null };
+    } catch (e) {
+      S.timelines[days] = {
+        ...(cur || {}),
+        loading: false,
+        error: e && e.message ? e.message : String(e),
+      };
+    }
+    rerender("overview", "usage");
+    return S.timelines[days];
+  }
+
+  async function loadUsageAggregate(days, force) {
+    const cur = S.usageAggregates[days];
+    if (cur && (cur.loading || (!force && cur.aggregate && Date.now() - cur.at < 60_000))) return;
+    S.usageAggregates[days] = { ...(cur || {}), loading: true };
+    try {
+      const untilMs = Date.now();
+      const usage = await api.tokens.query({ sinceMs: untilMs - days * DAY_MS, untilMs });
+      S.usageAggregates[days] = {
+        aggregate: usage.aggregate || {},
+        at: Date.now(),
+        loading: false,
+      };
+    } catch (e) {
+      S.usageAggregates[days] = {
+        aggregate: null,
+        at: Date.now(),
+        loading: false,
+        error: e.message,
+      };
+    }
+    rerender("usage");
+  }
+
+  async function loadMerged() {
+    S.mergedLoading = true;
+    rerender("usage");
+    try {
+      S.merged = await api.tokens.merged();
+    } catch (e) {
+      toast(e.message, "error");
+      S.merged = null;
+    }
+    S.mergedLoading = false;
+    rerender("usage");
+  }
+
+  async function loadAlerts() {
+    try {
+      S.alerts = await api.alerts.list();
+      receiveBudget(await api.alerts.state());
+    } catch {
+      /* the view shows the diagnostic from budget state when available */
+    }
+    rerender("alerts", "overview");
+  }
+
+  function receiveBudget(state) {
+    if (!state) return;
+    if (S.budget && state.revision < S.budget.revision) return;
+    S.budget = state;
+    if (state.evaluatedAt !== null) S.alerts = state.rules;
+    rerender("alerts", "overview");
+  }
+
+  async function loadPricing() {
+    try {
+      const data = await api.pricing.list();
+      S.pricing.overrides = data.overrides || [];
+      S.pricing.snapshot = data.snapshot;
+    } catch {
+      /* keep previous */
+    }
+    S.pricing.loaded = true;
+    rerender("settings");
+  }
+
+  async function loadApikeys() {
+    try {
+      S.apikeys = await api.apikeys.status();
+    } catch {
+      /* keep previous */
+    }
+    rerender("settings");
+  }
+
+  async function loadVersion() {
+    try {
+      S.version = await api.app.getVersion();
+    } catch {
+      S.version = null;
+    }
+    rerender("settings");
+  }
+
+  async function loadHistory() {
+    const H = S.history;
+    H.error = null;
+    H.loading = true;
+    rerender("quota");
+    try {
+      if (!H.providersLoaded) {
+        H.providers = await api.dashboardHistory.listProviders();
+        H.providersLoaded = true;
+        // A provider chosen by a reset notice is kept even before it is listed.
+        if (!H.provider && H.providers.length > 0) H.provider = H.providers[0];
+      }
+      H.events = api.resets ? await api.resets.events() : [];
+      H.status = api.resets ? await api.resets.status() : "";
+      if (H.provider) {
+        const [quota, resets, accounting] = await Promise.all([
+          api.dashboardHistory.quotaHistory(H.provider, H.days),
+          api.dashboardHistory.weeklyResets(H.provider, Math.max(1, Math.ceil(H.days / 7))),
+          api.dashboardHistory.accountingHistory(H.provider, H.days),
+        ]);
+        H.quota = quota || [];
+        H.resets = resets || [];
+        H.accounting = accounting || [];
+      } else {
+        H.quota = [];
+        H.resets = [];
+        H.accounting = [];
+      }
+      const untilMs = Date.now();
+      const [range, burn] = await Promise.all([
+        api.tokens.query({ sinceMs: untilMs - H.days * DAY_MS, untilMs }),
+        // A local rolling lookback, never presented as a provider's fixed window.
+        api.tokens.query({ sinceMs: untilMs - 5 * 3_600_000, untilMs }).catch(() => null),
+      ]);
+      H.sourceModels = (range.aggregate && range.aggregate.bySourceModel) || [];
+      H.burning = (burn && burn.aggregate && burn.aggregate.bySession) || [];
+    } catch {
+      H.error = "History unavailable: local observations could not be read";
+    }
+    H.loading = false;
+    rerender("quota");
+  }
+
+  async function loadSessions() {
+    const SS = S.sessions;
+    SS.error = null;
+    SS.loading = true;
+    rerender("sessions");
+    try {
+      SS.view = await api.sessions.report({
+        days: SS.days,
+        windows: SS.windows,
+        imports: SS.imports,
+      });
+    } catch (e) {
+      SS.error = e && e.message ? e.message : String(e);
+    }
+    SS.loading = false;
+    rerender("sessions");
+  }
+
+  // ── Quota helpers (shared by Overview and Quota) ───────────────────────
+  const WINDOW_TAG_ORDER = { "5h": 0, hourly: 0, daily: 1, weekly: 2, monthly: 3, yearly: 4 };
 
   function windowTag(entry) {
     const label = (entry.label || "").trim().replace(/:+$/, "").trim();
     return label || entry.name;
   }
 
-  function groupPercentEntriesByLabel(entries) {
+  function usedOf(entry) {
+    return 100 - Math.max(0, Math.min(100, entry.percentRemaining || 0));
+  }
+
+  /** Entries sharing a `group` render as one card with one row per window. */
+  function groupEntries(entries) {
     const byGroup = new Map();
     const others = [];
     for (const e of entries) {
@@ -475,8 +428,7 @@
       if (!byGroup.has(key)) byGroup.set(key, []);
       byGroup.get(key).push(e);
     }
-
-    const groups = new Map();
+    const groups = [];
     for (const [key, list] of byGroup) {
       if (list.length >= 2) {
         list.sort(
@@ -484,2632 +436,522 @@
             (WINDOW_TAG_ORDER[windowTag(a).toLowerCase()] ?? 99) -
             (WINDOW_TAG_ORDER[windowTag(b).toLowerCase()] ?? 99),
         );
-        groups.set(key, list);
+        groups.push({ name: key, windows: list });
       } else {
         others.push(...list);
       }
     }
-    return { groups, others };
-  }
-
-  function renderGroupedCard(groupName, windows) {
-    const card = el("div", { className: "card" });
-    const header = el("div", { className: "card-header", style: { marginBottom: "10px" } });
-    header.appendChild(el("span", { className: "card-title" }, groupName));
-    const account = windows.find((w) => w.account)?.account;
-    if (account) header.appendChild(accountSubtitleEl(account));
-    card.appendChild(header);
-
-    for (const w of windows) {
-      const remaining = Math.max(0, Math.min(100, w.percentRemaining || 0));
-      const used = 100 - remaining;
-      let barClass = "good";
-      if (used >= 90) barClass = "danger";
-      else if (used >= 75) barClass = "warning";
-
-      const row = el("div", {
-        style: { display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" },
-      });
-
-      // Window label
-      row.appendChild(
-        el(
-          "span",
-          {
-            style: {
-              width: "52px",
-              fontSize: "10px",
-              color: "var(--text-secondary)",
-              textAlign: "right",
-              flexShrink: "0",
-            },
-          },
-          windowTag(w),
-        ),
-      );
-
-      // Mini bar
-      const barWrap = el("div", {
-        className: "percent-bar-container",
-        style: { flex: "1", margin: "0", height: "12px" },
-      });
-      barWrap.appendChild(
-        el("div", { className: "percent-bar-fill " + barClass, style: { width: used + "%" } }),
-      );
-      row.appendChild(barWrap);
-
-      // Percentage
-      row.appendChild(
-        el(
-          "span",
-          {
-            style: {
-              width: "36px",
-              fontSize: "10px",
-              fontFamily: "var(--font-mono)",
-              textAlign: "right",
-              flexShrink: "0",
-              color: "var(--text-primary)",
-            },
-          },
-          Math.round(used) + "%",
-        ),
-      );
-
-      // Per-window reset countdown
-      row.appendChild(
-        resetCountdownEl(w.resetTimeIso, {
-          className: "reset-countdown",
-          style: {
-            width: "56px",
-            fontSize: "10px",
-            fontFamily: "var(--font-mono)",
-            textAlign: "right",
-            flexShrink: "0",
-            color: "var(--text-muted)",
-          },
-        }),
-      );
-
-      card.appendChild(row);
-    }
-
-    return card;
-  }
-
-  function renderDashboardInto(container) {
-    if (!quotaData) {
-      container.appendChild(
-        el(
-          "div",
-          { className: "empty-state" },
-          el("div", { className: "icon" }, "◉"),
-          el("div", { className: "text" }, "No quota data loaded"),
-          el("div", { className: "hint" }, "Click Refresh to fetch quota status"),
-        ),
-      );
-      return;
-    }
-
-    const entries = quotaData.entries || [];
-    const providerIds = quotaData.detectedProviderIds || [];
-    const errors = quotaData.errors || [];
-    const observed = quotaData.lastObservationAt
-      ? new Date(quotaData.lastObservationAt).toLocaleTimeString()
-      : null;
-    const status = quotaData.fetching
-      ? "Refreshing quota…"
-      : quotaData.previousObservation
-        ? "Showing previous observation" + (observed ? " from " + observed : "")
-        : quotaData.stale
-          ? "Some quota is unavailable"
-          : quotaData.lastSuccessAt
-            ? "Updated " + new Date(quotaData.lastSuccessAt).toLocaleTimeString()
-            : "Waiting for quota";
-    container.appendChild(
-      el(
-        "div",
-        {
-          className: "quota-refresh-status",
-          style: {
-            fontSize: "11px",
-            color: "var(--text-muted)",
-            marginBottom: "8px",
-          },
-        },
-        status,
-      ),
-    );
-
-    for (const message of quotaData.historyDiagnostics || []) {
-      container.appendChild(
-        el(
-          "div",
-          {
-            className: "history-diagnostic",
-            style: { marginBottom: "8px", color: "var(--text-secondary)" },
-          },
-          message,
-        ),
-      );
-    }
-    // Surface provider-level errors (e.g. Claude CLI session expired) instead
-    // of letting the provider silently vanish from the list below.
-    for (const err of errors) {
-      container.appendChild(
-        el(
-          "div",
-          { className: "alert-indicator triggered", style: { marginBottom: "8px" } },
-          el("span", {}, "⚠"),
-          el("span", {}, (err.label ? err.label + ": " : "") + err.message),
-        ),
-      );
-    }
-
-    // Filter
-    const filterBar = el("div", { className: "filter-bar" });
-    const sel = el("select", {
-      className: "filter-select",
-      onChange: (event) => {
-        quotaProviderFilter = event.target.value;
-        renderContent();
-      },
-    });
-    sel.appendChild(el("option", { value: "all" }, "All providers (" + providerIds.length + ")"));
-    providerIds.forEach((id) => sel.appendChild(el("option", { value: id }, id)));
-    filterBar.appendChild(
-      el(
-        "div",
-        { className: "filter-group" },
-        el("span", { className: "filter-label" }, "Provider:"),
-        sel,
-      ),
-    );
-    filterBar.appendChild(
-      el(
-        "span",
-        { style: { fontSize: "10px", color: "var(--text-muted)", marginLeft: "auto" } },
-        providerIds.length + " providers",
-      ),
-    );
-    container.appendChild(filterBar);
-
-    if (quotaProviderFilter !== "all" && !providerIds.includes(quotaProviderFilter))
-      quotaProviderFilter = "all";
-    sel.value = quotaProviderFilter;
-    const filterVal = quotaProviderFilter;
-    const filtered =
-      filterVal === "all"
-        ? entries
-        : entries.filter((e) =>
-            e.providerId
-              ? e.providerId === filterVal
-              : e.name && e.name.toLowerCase().includes(filterVal.toLowerCase()),
-          );
-
-    // Group entries that share a `group` (e.g. "Claude", "OpenCode Go (dvtn)")
-    // into one card; render the rest as individual cards
-    const { groups, others } = groupPercentEntriesByLabel(filtered);
-
-    // Sort groups by their most-constrained window's remaining percent (descending)
-    const mostConstrained = (ws) => Math.min(...ws.map((w) => w.percentRemaining ?? 0));
-    const sortedGroups = [...groups].sort(
-      ([, aw], [, bw]) => mostConstrained(bw) - mostConstrained(aw),
-    );
-
-    // Merge groups and individual cards into one sorted list
-    const merged = [
-      ...sortedGroups.map(([groupName, windows]) => {
-        const key = -mostConstrained(windows); // negative = sort by remaining desc, groups below value
-        return { type: "group", groupName, windows, sortKey: key };
-      }),
-      ...others.map((entry) => ({
-        type: "card",
-        entry,
-        sortKey:
-          entry.percentRemaining == null
-            ? -9999 // value entry — pin to top
-            : entry.percentRemaining > 0
-              ? -entry.percentRemaining // remaining desc
-              : 100,
-      })), // 0% last
-    ].sort((a, b) => a.sortKey - b.sortKey);
-
-    for (const item of merged) {
-      if (item.type === "group") {
-        container.appendChild(renderGroupedCard(item.groupName, item.windows));
-      } else {
-        container.appendChild(renderProviderCard(item.entry));
-      }
-    }
-    const selectedDetails = (quotaData.accountingDetails ?? []).filter(
-      (row) => filterVal === "all" || row.providerId === filterVal,
-    );
-    if (selectedDetails.length) {
-      const estimates = selectedDetails.filter((row) => row.runway);
-      if (estimates.length) {
-        const card = el("div", { className: "card runway-estimates" });
-        card.appendChild(el("div", { className: "card-title" }, "Fixed-window estimates"));
-        for (const row of estimates) {
-          card.appendChild(el("div", {}, row.name + ": " + row.runway));
-          const reset = row.facts.find((fact) => fact.label === "Reset");
-          if (reset) card.appendChild(el("div", { className: "hint" }, "Reset: " + reset.value));
-        }
-        card.appendChild(
-          el(
-            "div",
-            { className: "hint" },
-            "Linear average since fixed-window start; not a recent-rate prediction.",
-          ),
-        );
-        container.appendChild(card);
-      }
-      container.appendChild(renderAccountingRows(selectedDetails));
-    }
-
-    if (quotaData.sessionTokens) {
-      const st = quotaData.sessionTokens;
-      const card = el("div", { className: "card", style: { marginTop: "12px" } });
-      card.appendChild(el("div", { className: "card-title" }, "Session Tokens"));
-      card.appendChild(renderKV("Input", formatNumber(st.totalInput)));
-      card.appendChild(renderKV("Output", formatNumber(st.totalOutput)));
-      container.appendChild(card);
-    }
-  }
-
-  function renderProviderCard(entry) {
-    const card = el("div", { className: "card" });
-    const header = el("div", { className: "card-header" });
-    header.appendChild(el("span", { className: "card-title" }, entry.name));
-
-    if (entry.kind === "value") {
-      header.appendChild(
-        el(
-          "span",
-          { className: "card-subtitle", style: { fontSize: "12px", color: "var(--accent)" } },
-          entry.value,
-        ),
-      );
-    } else if (entry.account) {
-      header.appendChild(accountSubtitleEl(entry.account));
-    }
-    card.appendChild(header);
-
-    if (entry.kind === "value" && (entry.account || formatResetCountdown(entry.resetTimeIso))) {
-      const meta = el("div", { className: "percent-bar-label" });
-      meta.appendChild(
-        el("span", { className: "card-subtitle card-account" }, entry.account || ""),
-      );
-      meta.appendChild(resetCountdownEl(entry.resetTimeIso, { className: "value" }));
-      card.appendChild(meta);
-    }
-
-    if (entry.kind !== "value" && entry.percentRemaining != null) {
-      const remaining = Math.max(0, Math.min(100, entry.percentRemaining));
-      const used = 100 - remaining;
-      let barClass = "good";
-      if (used >= 90) barClass = "danger";
-      else if (used >= 75) barClass = "warning";
-
-      const barContainer = el("div", { className: "percent-bar-container" });
-      barContainer.appendChild(
-        el("div", { className: "percent-bar-fill " + barClass, style: { width: used + "%" } }),
-      );
-      card.appendChild(barContainer);
-
-      const label = el("div", { className: "percent-bar-label" });
-      label.appendChild(el("span", { className: "value" }, Math.round(used) + "% used"));
-
-      label.appendChild(resetCountdownEl(entry.resetTimeIso, { className: "value" }));
-      card.appendChild(label);
-    }
-
-    return card;
-  }
-
-  function renderAccountingRows(rows) {
-    const details = el("details", {
-      className: "card accounting-details",
-      style: { overflowWrap: "anywhere", minWidth: "0" },
-    });
-    details.appendChild(
-      el(
-        "summary",
-        { className: "card-title", style: { cursor: "pointer" } },
-        "Balances and usage details",
-      ),
-    );
-    for (const row of rows) {
-      const item = el("div", {
-        className: "accounting-detail-row",
-        style: { marginTop: "12px", minWidth: "0" },
-      });
-      item.appendChild(
-        el(
-          "div",
-          { className: "card-subtitle" },
-          row.providerId +
-            " · " +
-            row.name +
-            (row.prominence === "supplementary" ? " · Additional detail" : ""),
-        ),
-      );
-      item.appendChild(
-        el(
-          "div",
-          { className: "accounting-detail-value", style: { fontWeight: "600", margin: "4px 0" } },
-          row.value,
-        ),
-      );
-      for (const fact of row.facts || []) item.appendChild(renderKV(fact.label, fact.value));
-      details.appendChild(item);
-    }
-    return details;
-  }
-
-  // ===========================================================================
-  // Token Usage
-  // ===========================================================================
-
-  function fmtCompact(n) {
-    if (!Number.isFinite(n)) return "0";
-    const abs = Math.abs(n);
-    const sign = n < 0 ? "-" : "";
-    if (abs >= 1_000_000_000) return sign + (abs / 1_000_000_000).toFixed(1) + "B";
-    if (abs >= 1_000_000) return sign + (abs / 1_000_000).toFixed(1) + "M";
-    if (abs >= 1_000) return sign + (abs / 1_000).toFixed(1) + "K";
-    return String(Math.trunc(n));
-  }
-
-  function fmtUsd(n) {
-    if (!Number.isFinite(n)) return "$0.00";
-    return "$" + n.toFixed(2);
-  }
-
-  function normalizeSourceName(providerID) {
-    const p = (providerID || "").toLowerCase();
-    if (p.includes("opencode")) return "OpenCode";
-    if (p.includes("cursor")) return "Cursor";
-    if (p.includes("claude") || p.includes("anthropic")) return "Claude";
-    if (p.includes("github") || p.includes("copilot")) return "Copilot";
-    if (p.includes("openai") || p.includes("chatgpt") || p.includes("codex")) return "OpenAI";
-    if (p.includes("google") || p.includes("antigravity") || p.includes("gemini")) return "Google";
-    if (p.includes("azure")) return "Azure";
-    return providerID || "Unknown";
-  }
-
-  function sourceSortKey(providerID) {
-    const s = (providerID || "").toLowerCase();
-    if (s === "opencode") return 1;
-    if (s === "claude" || s === "anthropic") return 2;
-    if (s === "cursor") return 3;
-    if (s === "copilot" || s.includes("copilot")) return 4;
-    if (s === "openai") return 5;
-    if (s.includes("google")) return 6;
-    if (s.includes("azure")) return 7;
-    return 99;
-  }
-
-  function renderTokenUsageInto(container) {
-    // ── Merged view toggle ────────────────────────────
-    const toggleBar = el("div", { className: "filter-bar", style: { marginBottom: "8px" } });
-    toggleBar.appendChild(
-      el(
-        "button",
-        {
-          className: "btn btn-small " + (showMergedTokens ? "btn-primary" : ""),
-          onClick: () => {
-            if (!showMergedTokens) {
-              fetchMergedTokens();
-            } else {
-              showMergedTokens = false;
-              mergedTokenData = null;
-              renderTokenUsage();
-            }
-          },
-        },
-        "🌐 Merged",
-      ),
-    );
-    toggleBar.appendChild(
-      el(
-        "span",
-        {
-          style: { fontSize: "10px", color: "var(--text-muted)", marginLeft: "8px" },
-        },
-        showMergedTokens ? "All machines" : "This machine only",
-      ),
-    );
-    container.appendChild(toggleBar);
-
-    if (showMergedTokens) {
-      renderMergedTokenUsage(container);
-      return;
-    }
-
-    if (!tokenData) {
-      container.appendChild(
-        el(
-          "div",
-          { className: "loading-center" },
-          el("span", { className: "spinner" }),
-          " Loading token data...",
-        ),
-      );
-      fetchTokens();
-      return;
-    }
-
-    const agg = tokenData.aggregate || {};
-    const totals = agg.totals || {};
-    const winLabel = tokenData.window?.label || "Usage";
-
-    // ── Window selector ──────────────────────────────
-    const filterBar = el("div", { className: "filter-bar" });
-    const windows = [
-      { v: "day", l: "24h" },
-      { v: "week", l: "7d" },
-      { v: "month", l: "30d" },
-      { v: "all", l: "All" },
-    ];
-    const group = el(
-      "div",
-      { className: "filter-group" },
-      el("span", { className: "filter-label" }, "Window:"),
-    );
-    const activeWindow = tokenData.window?.label || "";
-    windows.forEach((w) => {
-      const isActive = activeWindow.includes(w.l);
-      group.appendChild(
-        el(
-          "button",
-          {
-            className: "btn btn-small token-window-select " + (isActive ? "btn-primary" : ""),
-            onClick: () => {
-              fetchTokens(w.v);
-            },
-          },
-          w.l,
-        ),
-      );
-    });
-    filterBar.appendChild(group);
-    filterBar.appendChild(
-      el(
-        "button",
-        {
-          className: "btn btn-small",
-          onClick: async () => {
-            try {
-              const r = await api.tokens.syncExportAndPush();
-              showToast(r.pushed ? "Synced & pushed" : "Exported (push skipped)");
-            } catch (e) {
-              showToast(e.message, "error");
-            }
-          },
-          style: { marginLeft: "auto", marginRight: "4px" },
-        },
-        "↗ Sync",
-      ),
-    );
-    filterBar.appendChild(
-      el(
-        "button",
-        { className: "btn btn-small", onClick: () => fetchTokens(), style: {} },
-        "⟳ Refresh",
-      ),
-    );
-    container.appendChild(filterBar);
-
-    // ── Summary card ─────────────────────────────────
-    const summary = el("div", { className: "card" });
-    summary.appendChild(el("div", { className: "card-title" }, winLabel));
-
-    const priced = totals.priced || {};
-    const unknownTok = totals.unknown || {};
-    const unpricedTok = totals.unpriced || {};
-    const hasCache = (priced.cache_read || 0) + (priced.cache_write || 0) > 0;
-    const hasReason =
-      (priced.reasoning || 0) + (unknownTok.reasoning || 0) + (unpricedTok.reasoning || 0) > 0;
-
-    const grid = el("div", {
-      style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "6px", marginTop: "6px" },
-    });
-    grid.appendChild(renderKV("Messages", formatNumber(totals.messageCount || 0)));
-    grid.appendChild(renderKV("Sessions", formatNumber(totals.sessionCount || 0)));
-    grid.appendChild(renderKV("Cost", fmtUsd(totals.costUsd), "var(--accent)"));
-    grid.appendChild(renderKV("Input Tokens", fmtCompact(priced.input || 0)));
-    grid.appendChild(renderKV("Output Tokens", fmtCompact(priced.output || 0)));
-    if (hasCache) {
-      grid.appendChild(renderKV("Cache Read", fmtCompact(priced.cache_read || 0)));
-      grid.appendChild(renderKV("Cache Write", fmtCompact(priced.cache_write || 0)));
-    }
-    if (hasReason) {
-      grid.appendChild(renderKV("Reasoning", fmtCompact(priced.reasoning || 0)));
-    }
-    summary.appendChild(grid);
-    container.appendChild(summary);
-
-    // ── Models table (priced + unpriced + unknown) ───
-    const bySourceModel = agg.bySourceModel || [];
-    const unpriced = agg.unpriced || [];
-    const unknown = agg.unknown || [];
-
-    const allModels = [
-      ...bySourceModel.map((row) => ({
-        sourceProviderID: row.sourceProviderID,
-        sourceModelID: row.sourceModelID,
-        tokens: row.tokens || {},
-        costUsd: row.costUsd,
-        messageCount: row.messageCount,
-        priced: true,
-      })),
-      ...unpriced.map((u) => ({
-        sourceProviderID: u.key?.sourceProviderID || "?",
-        sourceModelID: u.key?.sourceModelID || "?",
-        tokens: u.tokens || {},
-        costUsd: null,
-        messageCount: u.messageCount || 0,
-        priced: false,
-      })),
-      ...unknown.map((u) => ({
-        sourceProviderID: u.key?.sourceProviderID || "?",
-        sourceModelID: u.key?.sourceModelID || "?",
-        tokens: u.tokens || {},
-        costUsd: null,
-        messageCount: u.messageCount || 0,
-        priced: false,
-      })),
-    ];
-
-    if (allModels.length > 0) {
-      const grouped = new Map();
-      for (const row of allModels) {
-        const src = normalizeSourceName(row.sourceProviderID);
-        if (!grouped.has(src)) grouped.set(src, []);
-        grouped.get(src).push(row);
-      }
-
-      const sources = [...grouped.keys()].sort((a, b) => {
-        const ka = sourceSortKey(a),
-          kb = sourceSortKey(b);
-        return ka !== kb ? ka - kb : a.localeCompare(b);
-      });
-
-      const modelCard = el("div", { className: "card" });
-      modelCard.appendChild(
-        el("div", { className: "card-title", style: { marginBottom: "8px" } }, "Models"),
-      );
-
-      const table = el("table", { className: "data-table" });
-      const thead = el("thead");
-      const hRow = el("tr");
-      [
-        "Source",
-        "Model",
-        "Input",
-        "Output",
-        "C.Read",
-        "C.Write",
-        "Reason",
-        "Total",
-        "Cost",
-      ].forEach((h) => {
-        hRow.appendChild(el("th", {}, h));
-      });
-      thead.appendChild(hRow);
-      table.appendChild(thead);
-
-      const tbody = el("tbody");
-      let visibleCount = 0;
-      let totalCount = 0;
-      const limit = showAllModels ? Infinity : 10;
-
-      for (let si = 0; si < sources.length; si++) {
-        const src = sources[si];
-        const list = grouped.get(src);
-        list.sort((a, b) => (b.costUsd ?? -1) - (a.costUsd ?? -1));
-
-        let groupRendered = 0;
-        for (const row of list) {
-          totalCount++;
-          if (visibleCount >= limit) continue;
-          visibleCount++;
-          groupRendered++;
-          const t = row.tokens || {};
-          const tr = el("tr");
-          [
-            src,
-            row.sourceModelID || "?",
-            fmtCompact(t.input || 0),
-            fmtCompact(t.output || 0),
-            fmtCompact(t.cache_read || 0),
-            fmtCompact(t.cache_write || 0),
-            fmtCompact(t.reasoning || 0),
-            fmtCompact(
-              (t.input || 0) +
-                (t.output || 0) +
-                (t.cache_read || 0) +
-                (t.cache_write || 0) +
-                (t.reasoning || 0),
-            ),
-            row.priced ? fmtUsd(row.costUsd) : "N/A",
-          ].forEach((v, i) => {
-            tr.appendChild(
-              el(
-                "td",
-                {
-                  className:
-                    i >= 2 && i <= 7
-                      ? "num-col"
-                      : i === 8
-                        ? row.priced
-                          ? "cost-col"
-                          : "cost-col cost-na"
-                        : "text-col",
-                },
-                v,
-              ),
-            );
-          });
-          if (!row.priced) {
-            tr.style.cursor = "pointer";
-            tr.title = "Click to add pricing for " + row.sourceProviderID + "/" + row.sourceModelID;
-            tr.addEventListener("click", () => {
-              activeTab = 3;
-              updateHeaderTitle();
-              updateTabNavHighlight();
-              renderContentInto($(".tab-content"));
-              loadPricing();
-              showAddPricingModal(row.sourceProviderID, row.sourceModelID);
-            });
-          }
-          tbody.appendChild(tr);
-        }
-
-        // Separator row between sources (only if we rendered from this group and more groups follow)
-        if (groupRendered > 0 && si < sources.length - 1 && visibleCount < limit) {
-          const sep = el("tr");
-          sep.appendChild(el("td", { colSpan: 9, style: { padding: "2px 0" } }, ""));
-          tbody.appendChild(sep);
-        }
-      }
-      table.appendChild(tbody);
-
-      // Header row with count + toggle
-      const titleRow = el("div", {
-        style: { display: "flex", justifyContent: "space-between", alignItems: "center" },
-      });
-      titleRow.appendChild(el("span", {}, ""));
-      if (totalCount > 10) {
-        titleRow.appendChild(
-          el(
-            "button",
-            {
-              className: "btn btn-small",
-              onClick: () => {
-                showAllModels = !showAllModels;
-                renderContent();
-              },
-            },
-            showAllModels ? "Show less" : "Show all (" + totalCount + " models)",
-          ),
-        );
-      }
-      modelCard.appendChild(titleRow);
-
-      modelCard.appendChild(table);
-
-      const unpricedCount = unpriced.length + unknown.length;
-      if (unpricedCount > 0) {
-        modelCard.appendChild(
-          el(
-            "div",
-            { style: { fontSize: "10px", color: "var(--text-muted)", marginTop: "8px" } },
-            unpricedCount + " model(s) without pricing — add custom rates in Pricing tab.",
-          ),
-        );
-      }
-      container.appendChild(modelCard);
-    }
-
-    // ── Top Sessions ─────────────────────────────────
-    const sessions = (agg.bySession || []).filter(
-      (s) => (s.costUsd || 0) > 0 || (s.messageCount || 0) > 0,
-    );
-    if (sessions.length > 0) {
-      const top = sessions.sort((a, b) => (b.costUsd || 0) - (a.costUsd || 0)).slice(0, 10);
-      const sessCard = el("div", { className: "card" });
-      sessCard.appendChild(
-        el("div", { className: "card-title", style: { marginBottom: "8px" } }, "Top Sessions"),
-      );
-
-      const table = el("table", { className: "data-table" });
-      const thead = el("thead");
-      const hRow = el("tr");
-      ["Session", "Cost", "Tokens", "Msgs", "Title"].forEach((h) =>
-        hRow.appendChild(el("th", {}, h)),
-      );
-      thead.appendChild(hRow);
-      table.appendChild(thead);
-
-      const tbody = el("tbody");
-      top.forEach((row) => {
-        const tr = el("tr");
-        tr.appendChild(
-          el(
-            "td",
-            {
-              className: "text-col",
-              style: {
-                fontFamily: "var(--font-mono)",
-                fontSize: "9px",
-                maxWidth: "120px",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              },
-            },
-            row.sessionID || "-",
-          ),
-        );
-        tr.appendChild(el("td", { className: "cost-col" }, fmtUsd(row.costUsd)));
-        tr.appendChild(
-          el(
-            "td",
-            { className: "num-col" },
-            fmtCompact(
-              (row.tokens?.input || 0) +
-                (row.tokens?.output || 0) +
-                (row.tokens?.cache_read || 0) +
-                (row.tokens?.cache_write || 0) +
-                (row.tokens?.reasoning || 0),
-            ),
-          ),
-        );
-        tr.appendChild(el("td", { className: "num-col" }, formatNumber(row.messageCount || 0)));
-        tr.appendChild(
-          el(
-            "td",
-            {
-              className: "text-col",
-              style: {
-                maxWidth: "200px",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              },
-            },
-            (row.title || "").trim().slice(0, 30) || "(untitled)",
-          ),
-        );
-        tbody.appendChild(tr);
-      });
-      table.appendChild(tbody);
-      sessCard.appendChild(table);
-      container.appendChild(sessCard);
-    }
-  }
-
-  function renderTokenUsage() {
-    const c = $(".tab-content");
-    if (c) {
-      clear(c);
-      renderTokenUsageInto(c);
-    }
-  }
-
-  // ===========================================================================
-  // Merged Token Usage (cross-machine sync)
-  // ===========================================================================
-  function renderMergedTokenUsage(container) {
-    if (!mergedTokenData) {
-      container.appendChild(
-        el(
-          "div",
-          { className: "loading-center" },
-          el("span", { className: "spinner" }),
-          " Loading merged data...",
-        ),
-      );
-      return;
-    }
-
-    const totals = mergedTokenData.totals || {};
-    const byPM = mergedTokenData.byProviderModel || [];
-
-    // ── Totals card ───────────────────────────────────
-    const card = el("div", { className: "card" });
-    card.appendChild(el("div", { className: "card-title" }, "All Machines — Merged Totals"));
-    const grid = el("div", {
-      style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "6px", marginTop: "6px" },
-    });
-    grid.appendChild(renderKV("Messages", formatNumber(totals.messages || 0)));
-    grid.appendChild(renderKV("Cost", fmtUsd(totals.costUsd), "var(--accent)"));
-    grid.appendChild(renderKV("Input Tokens", fmtCompact(totals.tokens?.input || 0)));
-    grid.appendChild(renderKV("Output Tokens", fmtCompact(totals.tokens?.output || 0)));
-    grid.appendChild(renderKV("Cache Read", fmtCompact(totals.tokens?.cache_read || 0)));
-    grid.appendChild(renderKV("Cache Write", fmtCompact(totals.tokens?.cache_write || 0)));
-    card.appendChild(grid);
-    container.appendChild(card);
-
-    // ── By provider/model table ───────────────────────
-    if (byPM.length > 0) {
-      const modelCard = el("div", { className: "card" });
-      modelCard.appendChild(
-        el(
-          "div",
-          { className: "card-title", style: { marginBottom: "8px" } },
-          "By Provider / Model",
-        ),
-      );
-
-      const table = el("table", { className: "data-table" });
-      const thead = el("thead");
-      const hRow = el("tr");
-      ["Provider", "Model", "Input", "Output", "C.Read", "C.Write", "Total", "Cost"].forEach(
-        (h) => {
-          hRow.appendChild(el("th", {}, h));
-        },
-      );
-      thead.appendChild(hRow);
-      table.appendChild(thead);
-
-      const tbody = el("tbody");
-      const sorted = [...byPM].sort((a, b) => (b.costUsd || 0) - (a.costUsd || 0));
-      sorted.forEach((row) => {
-        const t = row.tokens || {};
-        const tr = el("tr");
-        [
-          row.provider || "?",
-          row.model || "?",
-          fmtCompact(t.input || 0),
-          fmtCompact(t.output || 0),
-          fmtCompact(t.cache_read || 0),
-          fmtCompact(t.cache_write || 0),
-          fmtCompact((t.input || 0) + (t.output || 0) + (t.cache_read || 0) + (t.cache_write || 0)),
-          fmtUsd(row.costUsd),
-        ].forEach((v, i) => {
-          tr.appendChild(
-            el(
-              "td",
-              { className: i >= 2 && i <= 6 ? "num-col" : i === 7 ? "cost-col" : "text-col" },
-              v,
-            ),
-          );
-        });
-        tbody.appendChild(tr);
-      });
-      table.appendChild(tbody);
-      modelCard.appendChild(table);
-      container.appendChild(modelCard);
-    }
-  }
-
-  // ===========================================================================
-  // Session usage (UA-TW-07): same report as `token-watcher sessions`
-  // ===========================================================================
-  const NA = "n/a";
-
-  async function loadSessions() {
-    sessionViewError = null;
-    setLoading(true);
-    try {
-      sessionView = await api.sessions.report({
-        days: sessionDays,
-        windows: sessionWindows,
-        imports: sessionImports,
-      });
-    } catch (e) {
-      sessionViewError = e && e.message ? e.message : String(e);
-    }
-    setLoading(false);
-    if (activeTab === 6) renderContent();
-  }
-
-  function pctOrNa(v) {
-    return v == null ? NA : Math.round(v * 100) + "%";
-  }
-
-  function usdOrNa(v) {
-    return v == null ? NA : fmtUsd(v);
-  }
-
-  function countOrNa(v) {
-    return v == null ? NA : formatNumber(v);
-  }
-
-  function utcMinute(ms) {
-    return ms == null ? NA : new Date(ms).toISOString().slice(0, 16).replace("T", " ");
-  }
-
-  function simpleTable(headers, rows, numericFrom) {
-    const table = el("table", { className: "data-table" });
-    const hRow = el("tr");
-    headers.forEach((h) => hRow.appendChild(el("th", {}, h)));
-    table.appendChild(el("thead", {}, hRow));
-    const tbody = el("tbody");
-    rows.forEach((cells) => {
-      const tr = el("tr");
-      cells.forEach((v, i) =>
-        tr.appendChild(el("td", { className: i >= numericFrom ? "num-col" : "text-col" }, v)),
-      );
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    return table;
-  }
-
-  function sessionCard(title, ...children) {
-    return el(
-      "div",
-      { className: "card" },
-      el("div", { className: "card-title" }, title),
-      ...children,
-    );
-  }
-
-  function renderSessionControls() {
-    const bar = el("div", {
-      className: "card",
-      style: { display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" },
-    });
-    [7, 14, 28, 90].forEach((d) =>
-      bar.appendChild(
-        el(
-          "button",
-          {
-            className: "btn btn-small" + (d === sessionDays ? " active" : ""),
-            onClick: () => {
-              sessionDays = d;
-              loadSessions();
-            },
-          },
-          d + " days",
-        ),
-      ),
-    );
-    const toggle = (label, value, set) => {
-      const input = el("input", { type: "checkbox" });
-      input.checked = value;
-      input.addEventListener("change", () => {
-        set(input.checked);
-        loadSessions();
-      });
-      return el("label", { style: { marginLeft: "8px" } }, input, " " + label);
+    for (const e of others) groups.push({ name: e.name, windows: [e], single: true });
+    // Value-only entries first, then the most constrained first.
+    const worst = (g) => {
+      const pct = g.windows.filter((w) => w.percentRemaining != null && w.kind !== "value");
+      return pct.length ? Math.max(...pct.map(usedOf)) : 101;
     };
-    bar.appendChild(toggle("Quota windows", sessionWindows, (v) => (sessionWindows = v)));
-    bar.appendChild(
-      toggle("Session Knowledge imports", sessionImports, (v) => (sessionImports = v)),
-    );
-    return bar;
+    return groups.sort((a, b) => worst(b) - worst(a));
   }
 
-  function renderSessionsInto(container) {
-    container.appendChild(renderSessionControls());
-    if (sessionViewError) {
-      container.appendChild(
-        el("div", { className: "empty-state" }, el("div", { className: "text" }, sessionViewError)),
-      );
-      return;
-    }
-    const r = sessionView;
-    if (!r) {
-      container.appendChild(
-        el(
-          "div",
-          { className: "loading-center" },
-          el("span", { className: "spinner" }),
-          " Loading sessions...",
-        ),
-      );
-      return;
-    }
+  /** Flat list of percent windows, most used first. */
+  function quotaWindows(entries) {
+    return (entries || [])
+      .filter((e) => e.kind !== "value" && e.percentRemaining != null)
+      .map((e) => ({
+        entry: e,
+        title: (e.group || "").trim() || e.name,
+        tag: (e.group || "").trim() ? windowTag(e) : "",
+        used: usedOf(e),
+      }))
+      .sort((a, b) => b.used - a.used);
+  }
 
-    const m = r.machine || {};
-    const coverage = el("div", {});
-    coverage.appendChild(
-      renderKV("Machine", (m.machineId || "?") + (m.mapped ? "" : " (unmapped)")),
+  function filterEntries(entries, filter) {
+    if (filter === "all") return entries;
+    return entries.filter((e) =>
+      e.providerId
+        ? e.providerId === filter
+        : e.name && e.name.toLowerCase().includes(filter.toLowerCase()),
     );
-    (r.coverage || []).forEach((c) => {
-      const detail =
-        c.status === "read"
-          ? c.sessions + " sessions, " + c.responses + " responses"
-          : c.status === "not-found"
-            ? "no local store found"
-            : "unavailable: " + (c.reason || "read failed");
-      coverage.appendChild(renderKV(c.source, detail));
+  }
+
+  /** A span kept current by tickCountdowns(); data-reset-at drives it. */
+  function countdown(iso, prefix) {
+    const p = prefix ?? "⟳ ";
+    const text = fmt.countdown(iso);
+    const span = el("span", {
+      className: "countdown",
+      title: iso ? "Resets " + new Date(iso).toLocaleString() : null,
     });
-    container.appendChild(sessionCard("Sources — last " + r.days + " days", coverage));
-
-    if (!r.sessions.length) {
-      container.appendChild(
-        el(
-          "div",
-          { className: "empty-state" },
-          el("div", { className: "text" }, "No sessions with reported usage in this window."),
-        ),
-      );
-    } else {
-      const t = r.totals;
-      const grid = el("div", {
-        style: {
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr 1fr",
-          gap: "6px",
-          marginTop: "6px",
-        },
-      });
-      grid.appendChild(renderKV("Sessions", formatNumber(t.sessions)));
-      grid.appendChild(renderKV("Responses", formatNumber(t.responses)));
-      grid.appendChild(renderKV("Tokens", fmtCompact(t.totalTokens)));
-      grid.appendChild(renderKV("Cache read", pctOrNa(t.cacheReadShare)));
-      grid.appendChild(renderKV("Subagent share", pctOrNa(t.subagentShare)));
-      grid.appendChild(
-        renderKV(
-          "Cost (priced " + pctOrNa(t.pricedShare) + ")",
-          usdOrNa(t.costUsd),
-          "var(--accent)",
-        ),
-      );
-      container.appendChild(sessionCard("Totals", grid));
-
-      container.appendChild(
-        sessionCard(
-          "Weekly (weeks start Monday UTC)",
-          simpleTable(
-            ["Week", "Source", "Sessions", "Resp", "Tokens", "Cache", "Cost"],
-            r.weekly.map((w) => [
-              w.weekStart,
-              w.source,
-              formatNumber(w.sessions),
-              formatNumber(w.responses),
-              fmtCompact(w.totalTokens),
-              pctOrNa(w.cacheReadShare),
-              usdOrNa(w.costUsd),
-            ]),
-            2,
-          ),
-        ),
-      );
-
-      container.appendChild(
-        sessionCard(
-          "Top " + r.sessions.length + " of " + r.sessionCount + " sessions by tokens",
-          simpleTable(
-            [
-              "Source",
-              "Session",
-              "Project",
-              "Start (UTC)",
-              "Model",
-              "Resp",
-              "Tokens",
-              "Cache",
-              "Cost",
-            ],
-            r.sessions.map((s) => [
-              s.source,
-              s.sessionID.slice(0, 12),
-              s.project || NA,
-              utcMinute(s.startMs),
-              (s.models[0] && s.models[0].model) || NA,
-              formatNumber(s.responses),
-              fmtCompact(s.totalTokens),
-              pctOrNa(s.cacheReadShare),
-              usdOrNa(s.costUsd),
-            ]),
-            5,
-          ),
-        ),
-      );
+    if (iso) {
+      span.dataset.resetAt = iso;
+      span.dataset.prefix = p;
     }
-
-    if (r.quotaWindows) container.appendChild(renderSessionWindows(r.quotaWindows));
-    if (r.imports) container.appendChild(renderSessionImports(r.imports));
-
-    const notes = el("ul", { className: "card-subtitle" });
-    (r.notes || []).forEach((n) => notes.appendChild(el("li", {}, n)));
-    notes.appendChild(el("li", {}, NA + " means the value is not available, not zero."));
-    container.appendChild(sessionCard("Notes", notes));
+    span.textContent = text ? p + text : "";
+    return span;
   }
 
-  function renderSessionWindows(q) {
-    if (q.status === "not-found") {
-      return sessionCard(
-        "Quota windows",
-        el("div", {}, "No quota history recorded on this machine yet."),
-      );
+  function tickCountdowns() {
+    for (const span of document.querySelectorAll("[data-reset-at]")) {
+      const text = fmt.countdown(span.dataset.resetAt);
+      span.textContent = text ? (span.dataset.prefix || "") + text : "";
     }
-    if (q.status === "unavailable") {
-      return sessionCard(
-        "Quota windows",
-        el("div", {}, "Quota history unavailable: " + (q.reason || "read failed")),
-      );
-    }
-    const children = [
-      simpleTable(
-        ["Provider", "Window", "Start (UTC)", "End (UTC)", "Used", "Resp", "Tokens"],
-        q.windows.map((w) => [
-          w.provider + (w.model ? " " + w.model : ""),
-          w.window +
-            (w.concurrent ? " ?" : "") +
-            (w.startMethod === "first-observation" ? " +" : ""),
-          utcMinute(w.startMs),
-          utcMinute(w.endMs),
-          w.percentUsed == null ? NA : Math.round(w.percentUsed) + "%",
-          formatNumber(w.responses),
-          fmtCompact(w.totalTokens),
-        ]),
-        4,
-      ),
-      el(
-        "div",
-        { className: "card-subtitle" },
-        "? windows from more than one account overlap, so no usage is placed in them; + started at the first observation.",
-      ),
-    ];
-    if (q.unattributed && q.unattributed.length) {
-      const list = el("ul", {});
-      q.unattributed.forEach((u) =>
-        list.appendChild(
+  }
+
+  // ── Shared modals ──────────────────────────────────────────────────────
+  function showAddPricingModal(provider, model) {
+    const vals = { provider: provider || "", model: model || "", label: "" };
+    const RATE_KEYS = ["input", "output", "cache_read", "cache_write", "reasoning"];
+    for (const k of RATE_KEYS) vals[k] = "";
+    ui.openModal("Add pricing override", (close) => {
+      const text = (key, attrs) =>
+        ui.input({
+          type: "text",
+          value: vals[key],
+          onInput: (e) => (vals[key] = e.target.value),
+          ...attrs,
+        });
+      const num = (key) =>
+        ui.input({
+          type: "number",
+          min: "0",
+          step: "any",
+          placeholder: "$ / 1M",
+          onInput: (e) => (vals[key] = e.target.value),
+        });
+      return {
+        body: [
           el(
-            "li",
-            {},
-            (u.provider || "unknown") +
-              (u.window ? " " + u.window : "") +
-              ": " +
-              formatNumber(u.responses) +
-              " responses, " +
-              fmtCompact(u.totalTokens) +
-              " tokens (" +
-              u.reason +
-              ")",
-          ),
-        ),
-      );
-      children.push(
-        el(
-          "div",
-          { className: "card-title", style: { marginTop: "8px" } },
-          "Not placed on a window",
-        ),
-        list,
-      );
-    }
-    return sessionCard("Quota windows", ...children);
-  }
-
-  function renderSessionImports(imp) {
-    if (imp.status === "not-found") {
-      return sessionCard(
-        "Session Knowledge imports",
-        el("div", {}, "None yet. Run `token-watcher sessions import <file>`."),
-      );
-    }
-    if (imp.status === "unavailable") {
-      return sessionCard(
-        "Session Knowledge imports",
-        el("div", {}, "Import store unavailable: " + (imp.reason || "read failed")),
-      );
-    }
-    const o = imp.outcomes;
-    const outcome =
-      o.sessions === 0
-        ? el("div", {}, "No imported session in range has a linked commit or pull request.")
-        : el(
             "div",
-            {},
-            o.sessions +
-              " sessions linked to " +
-              o.commits +
-              " commits and " +
-              o.pullRequests +
-              " pull requests. This machine: " +
-              o.matchedNativeSessions +
-              " matched sessions, " +
-              fmtCompact(o.matchedTokens) +
-              " tokens, " +
-              usdOrNa(o.matchedCostUsd) +
-              ", " +
-              usdOrNa(o.costPerCommitUsd) +
-              " per commit.",
-          );
-    return sessionCard(
-      "Session Knowledge imports — " +
-        imp.inRange +
-        " in range of " +
-        imp.storedRecords +
-        " stored",
-      simpleTable(
-        ["Source", "Tokens from", "Sessions", "User", "Assistant", "Tools", "Tokens", "Outcome"],
-        imp.bySource.map((row) => [
-          row.source,
-          row.owner,
-          formatNumber(row.sessions),
-          countOrNa(row.userTurns),
-          countOrNa(row.assistantTurns),
-          countOrNa(row.toolCalls),
-          row.importedTokens == null
-            ? row.owner === "native"
-              ? "native"
-              : NA
-            : fmtCompact(row.importedTokens),
-          formatNumber(row.withOutcome),
-        ]),
-        2,
-      ),
-      el("div", { className: "card-title", style: { marginTop: "8px" } }, "Outcomes (git proxy)"),
-      el(
-        "div",
-        { className: "card-subtitle" },
-        "Commits and pull requests Session Knowledge linked to a session; not proof of delivered work.",
-      ),
-      outcome,
-    );
-  }
-
-  // ===========================================================================
-  // Budget Alerts
-  // ===========================================================================
-  function renderAlertsInto(container) {
-    if (budgetState?.diagnostic) {
-      container.appendChild(el("div", { className: "history-diagnostic" }, budgetState.diagnostic));
-      if (!alerts.length) return;
-    }
-    const header = el("div", {
-      style: {
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        marginBottom: "12px",
-      },
-    });
-    header.appendChild(
-      el(
-        "span",
-        { style: { fontSize: "12px", color: "var(--text-secondary)" } },
-        alerts.length + " rule" + (alerts.length !== 1 ? "s" : ""),
-      ),
-    );
-    header.appendChild(
-      el(
-        "button",
-        { className: "btn btn-small btn-primary", onClick: showCreateAlertModal },
-        "+ New Alert",
-      ),
-    );
-    container.appendChild(header);
-
-    if (alerts.length === 0) {
-      container.appendChild(
-        el(
-          "div",
-          { className: "empty-state" },
-          el("div", { className: "icon" }, "⚠"),
-          el("div", { className: "text" }, "No budget alerts configured"),
-          el("div", { className: "hint" }, "Create alerts to monitor your token spending"),
-        ),
-      );
-      return;
-    }
-
-    alerts.forEach((alert) => {
-      const card = el("div", { className: "card" });
-      const hdr = el("div", { className: "card-header" });
-      hdr.appendChild(el("span", { className: "card-title" }, alert.name));
-      hdr.appendChild(
-        el(
-          "span",
-          { className: "tag " + (alert.enabled ? "tag-green" : "tag-gray") },
-          alert.enabled ? "ON" : "OFF",
-        ),
-      );
-      card.appendChild(hdr);
-      card.appendChild(
-        renderKV(
-          "Scope",
-          (alert.scope?.type || "global") +
-            (alert.scope?.providerId ? "/" + alert.scope.providerId : ""),
-        ),
-      );
-      card.appendChild(
-        renderKV(
-          "Threshold",
-          (alert.metric === "cost_usd" ? "$" : "") +
-            alert.threshold +
-            " " +
-            (alert.metric || "").replace(/_/g, " "),
-        ),
-      );
-      card.appendChild(renderKV("Window", alert.window));
-      const evaluation = budgetState?.results.find((item) => item.rule.id === alert.id);
-      if (alert.enabled) {
-        card.appendChild(
-          renderKV(
-            "Status",
-            evaluation
-              ? evaluation.status === "unknown"
-                ? "Unknown"
-                : evaluation.triggered
-                  ? "Triggered"
-                  : "Within threshold"
-              : "Not evaluated",
+            { className: "field-row" },
+            ui.field("Provider", text("provider", { placeholder: "e.g. anthropic" })),
+            ui.field("Model", text("model", { placeholder: "e.g. claude-sonnet" })),
           ),
-        );
-        if (evaluation) {
-          card.appendChild(renderKV("Evaluation", evaluation.message));
-          card.appendChild(
-            renderKV("Evaluated", new Date(evaluation.evaluatedAt).toLocaleString()),
-          );
-          card.appendChild(
-            renderKV(
-              "Range",
-              (evaluation.window.sinceMs
-                ? new Date(evaluation.window.sinceMs).toLocaleString()
-                : "All available history") +
-                " – " +
-                new Date(evaluation.window.untilMs).toLocaleString(),
-            ),
-          );
-        }
-      }
-      card.appendChild(
-        el(
-          "div",
-          { style: { marginTop: "8px" } },
           el(
-            "button",
-            { className: "btn btn-small btn-danger", onClick: () => deleteAlert(alert.id) },
-            "Delete",
+            "div",
+            { className: "field-grid" },
+            ui.field("Input", num("input")),
+            ui.field("Output", num("output")),
+            ui.field("Cache read", num("cache_read")),
+            ui.field("Cache write", num("cache_write")),
+            ui.field("Reasoning", num("reasoning")),
           ),
-        ),
-      );
-      container.appendChild(card);
+          el(
+            "div",
+            { className: "field-hint" },
+            "Rates are USD per one million tokens. Leave a rate empty to keep it unpriced.",
+          ),
+          ui.field("Label (optional)", text("label")),
+        ],
+        actions: [
+          ui.button("Cancel", close, { small: true }),
+          ui.button(
+            "Save override",
+            async () => {
+              const rates = {};
+              for (const k of RATE_KEYS) if (vals[k] !== "") rates[k] = parseFloat(vals[k]);
+              try {
+                await api.pricing.save({
+                  provider: vals.provider,
+                  model: vals.model,
+                  rates,
+                  label: vals.label || undefined,
+                });
+                toast("Override saved");
+                close();
+                // Costs change with the new rate.
+                S.timelines = {};
+                S.usageAggregates = {};
+                await loadPricing();
+              } catch (e) {
+                toast(e.message, "error");
+              }
+            },
+            { kind: "primary", small: true },
+          ),
+        ],
+      };
     });
   }
 
-  function renderAlerts() {
-    const c = $(".tab-content");
-    if (c) {
-      clear(c);
-      renderAlertsInto(c);
-    }
+  const METRICS = [
+    ["cost_usd", "Estimated cost (USD)"],
+    ["tokens_total", "Total tokens"],
+    ["tokens_input", "Input tokens"],
+    ["tokens_output", "Output tokens"],
+  ];
+  const WINDOWS = [
+    ["day", "Per day"],
+    ["week", "Per week"],
+    ["month", "Per month"],
+    ["all", "All time"],
+  ];
+
+  function formatMetricValue(metric, value) {
+    if (value == null || !Number.isFinite(Number(value))) return TW.NA;
+    return metric === "cost_usd" ? fmt.usd(Number(value)) : fmt.compact(Number(value));
   }
 
-  async function deleteAlert(id) {
-    try {
-      await api.alerts.delete(id);
-      showToast("Alert deleted");
-      await loadAlerts();
-    } catch (e) {
-      showToast(e.message, "error");
-    }
+  function describeRule(r) {
+    const metric = (METRICS.find(([k]) => k === r.metric) || [
+      r.metric,
+      String(r.metric || "").replace(/_/g, " "),
+    ])[1].toLowerCase();
+    const scope =
+      r.scope && r.scope.type === "model"
+        ? "model " + (r.scope.providerId ? r.scope.providerId + "/" : "") + (r.scope.modelId || "?")
+        : r.scope && r.scope.type === "provider"
+          ? "provider " + (r.scope.providerId || "?")
+          : "all usage";
+    const win = (WINDOWS.find(([k]) => k === r.window) || [r.window, r.window])[1].toLowerCase();
+    return (
+      "Alert when " +
+      metric +
+      " is " +
+      (r.direction || "above") +
+      " " +
+      formatMetricValue(r.metric, r.threshold) +
+      " · " +
+      win +
+      " · " +
+      scope
+    );
   }
 
   function showCreateAlertModal() {
-    const overlay = el("div", {
-      className: "modal-overlay",
-      onClick: (e) => {
-        if (e.target === overlay) overlay.remove();
-      },
-    });
-    const modal = el("div", { className: "modal" });
-    modal.appendChild(el("div", { className: "modal-title" }, "New Budget Alert"));
-
-    const fields = [
-      ["Name", "text", "name", ""],
-      ["Scope Type", "select", "scopeType", "global", ["global", "provider", "model"]],
-      ["Provider ID", "text", "scopeProviderId", ""],
-      ["Model ID", "text", "scopeModelId", ""],
-      ["Window", "select", "window", "day", ["day", "week", "month", "all"]],
-      [
-        "Metric",
-        "select",
-        "metric",
-        "cost_usd",
-        ["cost_usd", "tokens_total", "tokens_input", "tokens_output"],
-      ],
-      ["Threshold", "number", "threshold", "1"],
-      ["Direction", "select", "direction", "above", ["above", "below"]],
-    ];
-
-    const values = {};
-    fields.forEach(([label, type, key, def, opts]) => {
-      values[key] = def;
-      const group = el("div", { className: "form-group" });
-      group.appendChild(el("label", { className: "form-label" }, label));
-      if (type === "select" && opts) {
-        const s = el("select", {
-          className: "filter-select",
-          style: { width: "100%" },
-          onChange: (e) => (values[key] = e.target.value),
+    const v = {
+      name: "",
+      scopeType: "global",
+      providerId: "",
+      modelId: "",
+      window: "day",
+      metric: "cost_usd",
+      threshold: 5,
+      direction: "above",
+    };
+    ui.openModal("New budget alert", (close) => {
+      const scopeFields = el("div", { className: "field-row" });
+      const preview = el("div", { className: "rule-preview" });
+      const paintPreview = () => {
+        preview.textContent = describeRule({
+          metric: v.metric,
+          threshold: v.threshold,
+          direction: v.direction,
+          window: v.window,
+          scope: { type: v.scopeType, providerId: v.providerId, modelId: v.modelId },
         });
-        opts.forEach((o) => s.appendChild(el("option", { value: o }, o)));
-        group.appendChild(s);
-      } else {
-        group.appendChild(
-          el("input", {
-            className: "form-input",
-            type: type,
-            placeholder: "",
-            onInput: (e) =>
-              (values[key] = type === "number" ? parseFloat(e.target.value) || 0 : e.target.value),
+      };
+      // Provider/model inputs appear only for the scopes that use them.
+      const syncScope = () => {
+        clear(scopeFields);
+        if (v.scopeType !== "global")
+          scopeFields.appendChild(
+            ui.field(
+              "Provider ID",
+              ui.input({
+                type: "text",
+                value: v.providerId,
+                placeholder: "e.g. anthropic",
+                onInput: (e) => ((v.providerId = e.target.value), paintPreview()),
+              }),
+            ),
+          );
+        if (v.scopeType === "model")
+          scopeFields.appendChild(
+            ui.field(
+              "Model ID",
+              ui.input({
+                type: "text",
+                value: v.modelId,
+                placeholder: "e.g. claude-sonnet",
+                onInput: (e) => ((v.modelId = e.target.value), paintPreview()),
+              }),
+            ),
+          );
+        paintPreview();
+      };
+      const body = [
+        ui.field(
+          "Name",
+          ui.input({
+            type: "text",
+            placeholder: "e.g. Daily spend cap",
+            onInput: (e) => (v.name = e.target.value),
           }),
-        );
-      }
-      modal.appendChild(group);
-    });
-
-    const actions = el("div", { className: "modal-actions" });
-    actions.appendChild(
-      el("button", { className: "btn btn-small", onClick: () => overlay.remove() }, "Cancel"),
-    );
-    actions.appendChild(
-      el(
-        "button",
-        {
-          className: "btn btn-small btn-primary",
-          onClick: async () => {
-            try {
-              await api.alerts.create({
-                name: values["name"] || "New Alert",
-                scope: {
-                  type: values["scopeType"],
-                  providerId: values["scopeProviderId"] || undefined,
-                  modelId: values["scopeModelId"] || undefined,
-                },
-                window: values["window"],
-                metric: values["metric"],
-                threshold: values["threshold"],
-                direction: values["direction"],
-              });
-              showToast("Alert created");
-              overlay.remove();
-              await loadAlerts();
-            } catch (e) {
-              showToast(e.message, "error");
-            }
-          },
-        },
-        "Create",
-      ),
-    );
-    modal.appendChild(actions);
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
-  }
-
-  // ===========================================================================
-  // Pricing Editor
-  // ===========================================================================
-  function renderPricingInto(container) {
-    if (pricingSnapshot) {
-      const card = el("div", { className: "card" });
-      const hdr = el("div", { className: "card-header" });
-      hdr.appendChild(el("span", { className: "card-title" }, "Pricing Snapshot"));
-      hdr.appendChild(
-        el(
-          "span",
-          { className: "tag " + (pricingSnapshot.stale ? "tag-yellow" : "tag-green") },
-          pricingSnapshot.stale ? "STALE" : "FRESH",
         ),
-      );
-      card.appendChild(hdr);
-      card.appendChild(
-        renderKV(
-          "Updated",
-          pricingSnapshot.generatedAt
-            ? new Date(pricingSnapshot.generatedAt).toLocaleDateString()
-            : "never",
-        ),
-      );
-      card.appendChild(renderKV("Providers", String(pricingSnapshot.providerCount || 0)));
-      card.appendChild(renderKV("Models", String(pricingSnapshot.modelCount || 0)));
-      container.appendChild(card);
-    }
-
-    const hdr = el("div", {
-      style: {
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        marginBottom: "8px",
-      },
-    });
-    hdr.appendChild(
-      el(
-        "span",
-        { style: { fontSize: "12px", color: "var(--text-secondary)" } },
-        pricingOverrides.length + " override" + (pricingOverrides.length !== 1 ? "s" : ""),
-      ),
-    );
-    hdr.appendChild(
-      el(
-        "button",
-        { className: "btn btn-small btn-primary", onClick: showAddPricingModal },
-        "+ Add Override",
-      ),
-    );
-    container.appendChild(hdr);
-
-    pricingOverrides.forEach((o) => {
-      const card = el("div", { className: "card" });
-      const ch = el("div", { className: "card-header" });
-      ch.appendChild(el("span", { className: "card-title" }, o.provider + "/" + o.model));
-      ch.appendChild(
-        el(
-          "button",
-          {
-            className: "btn btn-small btn-danger",
-            onClick: async () => {
-              try {
-                await api.pricing.delete(o.provider, o.model);
-                showToast("Override removed");
-                await loadPricing();
-              } catch (e) {
-                showToast(e.message, "error");
-              }
-            },
-          },
-          "✕",
-        ),
-      );
-      card.appendChild(ch);
-      const rates = o.rates || {};
-      const g = el("div", {
-        style: {
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr 1fr",
-          gap: "4px",
-          fontSize: "10px",
-        },
-      });
-      if (rates.input != null) g.appendChild(renderKV("Input", "$" + rates.input + "/1M"));
-      if (rates.output != null) g.appendChild(renderKV("Output", "$" + rates.output + "/1M"));
-      if (rates.cache_read != null)
-        g.appendChild(renderKV("Cache Read", "$" + rates.cache_read + "/1M"));
-      if (rates.cache_write != null)
-        g.appendChild(renderKV("Cache Write", "$" + rates.cache_write + "/1M"));
-      if (rates.reasoning != null)
-        g.appendChild(renderKV("Reasoning", "$" + rates.reasoning + "/1M"));
-      card.appendChild(g);
-      if (o.label)
-        card.appendChild(
-          el(
-            "div",
-            { style: { fontSize: "10px", color: "var(--text-muted)", marginTop: "4px" } },
-            o.label,
-          ),
-        );
-      container.appendChild(card);
-    });
-  }
-
-  function renderPricing() {
-    const c = $(".tab-content");
-    if (c) {
-      clear(c);
-      renderPricingInto(c);
-    }
-  }
-
-  function showAddPricingModal(provider, model) {
-    const overlay = el("div", {
-      className: "modal-overlay",
-      onClick: (e) => {
-        if (e.target === overlay) overlay.remove();
-      },
-    });
-    const modal = el("div", { className: "modal" });
-    modal.appendChild(el("div", { className: "modal-title" }, "Add Pricing Override"));
-    const vals = { provider: provider || "", model: model || "" };
-    [
-      ["Provider", "text", "provider", provider || ""],
-      ["Model", "text", "model", model || ""],
-      ["Input ($/1M tokens)", "number", "input", ""],
-      ["Output ($/1M tokens)", "number", "output", ""],
-      ["Cache Read ($/1M)", "number", "cache_read", ""],
-      ["Cache Write ($/1M)", "number", "cache_write", ""],
-      ["Reasoning ($/1M)", "number", "reasoning", ""],
-      ["Label (optional)", "text", "label", ""],
-    ].forEach(([label, type, key, def]) => {
-      vals[key] = def;
-      const g = el("div", { className: "form-group" });
-      g.appendChild(el("label", { className: "form-label" }, label));
-      const input = el("input", {
-        className: "form-input",
-        type: type,
-        placeholder: "",
-        onInput: (e) => (vals[key] = type === "number" ? e.target.value : e.target.value),
-      });
-      if (def) input.value = def;
-      g.appendChild(input);
-      modal.appendChild(g);
-    });
-    const actions = el("div", { className: "modal-actions" });
-    actions.appendChild(
-      el("button", { className: "btn btn-small", onClick: () => overlay.remove() }, "Cancel"),
-    );
-    actions.appendChild(
-      el(
-        "button",
-        {
-          className: "btn btn-small btn-primary",
-          onClick: async () => {
-            const rates = {};
-            if (vals["input"]) rates.input = parseFloat(vals["input"]);
-            if (vals["output"]) rates.output = parseFloat(vals["output"]);
-            if (vals["cache_read"]) rates.cache_read = parseFloat(vals["cache_read"]);
-            if (vals["cache_write"]) rates.cache_write = parseFloat(vals["cache_write"]);
-            if (vals["reasoning"]) rates.reasoning = parseFloat(vals["reasoning"]);
-            try {
-              await api.pricing.save({
-                provider: vals["provider"],
-                model: vals["model"],
-                rates,
-                label: vals["label"] || undefined,
-              });
-              showToast("Override saved");
-              overlay.remove();
-              await loadPricing();
-            } catch (e) {
-              showToast(e.message, "error");
-            }
-          },
-        },
-        "Save",
-      ),
-    );
-    modal.appendChild(actions);
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
-  }
-
-  // ===========================================================================
-  // API Keys
-  // ===========================================================================
-  function renderApiKeysInto(container) {
-    if (!apikeyStatus) {
-      container.appendChild(
         el(
           "div",
-          { className: "loading-center" },
-          el("span", { className: "spinner" }),
-          " Loading...",
+          { className: "field-row" },
+          ui.field(
+            "Metric",
+            ui.select(METRICS, v.metric, (x) => ((v.metric = x), paintPreview())),
+          ),
+          ui.field(
+            "Window",
+            ui.select(WINDOWS, v.window, (x) => ((v.window = x), paintPreview())),
+          ),
         ),
-      );
-      return;
-    }
-
-    if (apikeyStatus.state === "empty") {
-      container.appendChild(
         el(
           "div",
-          { className: "empty-state" },
-          el("div", { className: "icon" }, "🔑"),
-          el("div", { className: "text" }, "No API key store found"),
-          el(
-            "div",
-            { className: "hint" },
-            "Create an encrypted store to manage your provider API keys",
-          ),
-          el(
-            "button",
-            {
-              className: "btn btn-primary",
-              style: { marginTop: "12px" },
-              onClick: showInitStoreModal,
-            },
-            "Create Key Store",
-          ),
-        ),
-      );
-      return;
-    }
-
-    if (apikeyStatus.state === "locked") {
-      const card = el("div", { className: "card" });
-      const hdr = el("div", { className: "card-header" });
-      hdr.appendChild(el("span", { className: "card-title" }, "Key Store Locked"));
-      hdr.appendChild(el("span", { className: "tag tag-yellow" }, "🔒 LOCKED"));
-      card.appendChild(hdr);
-      card.appendChild(
-        el(
-          "div",
-          { style: { fontSize: "11px", color: "var(--text-secondary)", marginBottom: "8px" } },
-          (apikeyStatus.providerCount || 0) + " key(s) stored",
-        ),
-      );
-      card.appendChild(
-        el(
-          "button",
-          { className: "btn btn-primary", onClick: showUnlockModal },
-          "Unlock with Passphrase",
-        ),
-      );
-      container.appendChild(card);
-      return;
-    }
-
-    if (apikeyStatus.state === "unlocked") {
-      const actions = el("div", {
-        style: { display: "flex", gap: "8px", marginBottom: "12px", flexWrap: "wrap" },
-      });
-      actions.appendChild(
-        el("button", { className: "btn btn-small", onClick: showAddKeyModal }, "+ Add Key"),
-      );
-      actions.appendChild(
-        el("button", { className: "btn btn-small", onClick: showExportModal }, "↗ Export"),
-      );
-      actions.appendChild(
-        el(
-          "button",
-          {
-            className: "btn btn-small",
-            onClick: async () => {
-              await api.apikeys.lock();
-              await loadApikeyStatus();
-              showToast("Store locked");
-            },
-          },
-          "🔒 Lock",
-        ),
-      );
-      container.appendChild(actions);
-
-      const providers = apikeyStatus.providers || [];
-      if (providers.length === 0) {
-        container.appendChild(
-          el(
-            "div",
-            { className: "empty-state" },
-            el("div", { className: "text" }, "No API keys stored"),
-            el("div", { className: "hint" }, "Add keys for providers like OpenAI, Anthropic, etc."),
-          ),
-        );
-      }
-      providers.forEach((info) => {
-        const card = el("div", { className: "card" });
-        const hdr = el("div", { className: "card-header" });
-        hdr.appendChild(el("span", { className: "card-title" }, info.providerId));
-        hdr.appendChild(
-          el(
-            "span",
-            { className: "tag " + (info.hasKey ? "tag-green" : "tag-gray") },
-            info.hasKey ? "STORED" : "EMPTY",
-          ),
-        );
-        card.appendChild(hdr);
-        card.appendChild(renderKV("Label", info.label || "-"));
-        card.appendChild(renderKV("Updated", new Date(info.updatedAt).toLocaleDateString()));
-        card.appendChild(
-          el(
-            "div",
-            { style: { marginTop: "8px" } },
-            el(
-              "button",
-              {
-                className: "btn btn-small btn-danger",
-                onClick: async () => {
-                  try {
-                    await api.apikeys.delete(info.providerId);
-                    showToast("Key deleted");
-                    await loadApikeyStatus();
-                  } catch (e) {
-                    showToast(e.message, "error");
-                  }
-                },
-              },
-              "Delete",
+          { className: "field-row" },
+          ui.field(
+            "Direction",
+            ui.select(
+              [
+                ["above", "Above"],
+                ["below", "Below"],
+              ],
+              v.direction,
+              (x) => ((v.direction = x), paintPreview()),
             ),
           ),
-        );
-        container.appendChild(card);
-      });
-    }
-  }
-
-  function renderApiKeys() {
-    const c = $(".tab-content");
-    if (c) {
-      clear(c);
-      renderApiKeysInto(c);
-    }
-  }
-
-  // ===========================================================================
-  // History
-  // ===========================================================================
-
-  function renderBurndownSparkline(points) {
-    if (!points || points.length === 0) {
-      return el(
-        "div",
-        { className: "hint", style: { fontSize: "11px", color: "var(--text-muted)" } },
-        "No history yet for this range.",
-      );
-    }
-
-    const recent = points.slice(-30); // cap width to what fits the popup
-    const row = el("div", { className: "sparkline" });
-    recent.forEach((s) => {
-      const remaining = Math.max(0, Math.min(100, s.percentRemaining ?? 0));
-      const used = 100 - remaining;
-      let barClass = "good";
-      if (used >= 90) barClass = "danger";
-      else if (used >= 75) barClass = "warning";
-
-      row.appendChild(
-        el("div", {
-          className: "sparkline-bar " + barClass,
-          style: { height: Math.max(4, Math.round((remaining / 100) * 48)) + "px" },
-          title:
-            new Date(s.timestamp).toLocaleString() + " — " + Math.round(remaining) + "% remaining",
-        }),
-      );
-    });
-    return row;
-  }
-
-  /**
-   * Splits the collapsed (worst-window-wins) quota_snapshots time series
-   * back out into one series per limit kind (e.g. "5h:" vs "Weekly:"), so
-   * burn-rate can be computed per window instead of across mismatched kinds.
-   */
-  function groupQuotaSnapshotsByKind(snapshots) {
-    const byKind = new Map();
-    (snapshots || []).forEach((snap) => {
-      (snap.limits || []).forEach((limit) => {
-        const account =
-          snap.accountIdentity && snap.accountIdentity !== "unknown"
-            ? "Account " + snap.accountIdentity.slice(0, 8)
-            : "Unknown account";
-        const key = account + " · " + (limit.kind || limit.group || "quota");
-        if (!byKind.has(key)) byKind.set(key, { group: limit.group || key, points: [] });
-        byKind.get(key).points.push({
-          timestamp: snap.timestamp,
-          percentRemaining: 100 - limit.percent,
-          resetTimeIso: limit.resets_at,
-        });
-      });
-    });
-    byKind.forEach((entry) => entry.points.sort((a, b) => a.timestamp - b.timestamp));
-    return byKind;
-  }
-
-  function formatDuration(minutes) {
-    if (!Number.isFinite(minutes) || minutes < 0) return "—";
-    const totalMin = Math.round(minutes);
-    const h = Math.floor(totalMin / 60);
-    const m = totalMin % 60;
-    return h > 0 ? h + "h " + m + "m" : m + "m";
-  }
-
-  /**
-   * Descriptive consumption between the last two observations only.
-   * Fixed-window runway is calculated by the shared metadata-aware formatter.
-   */
-  function computeBurnStats(points) {
-    if (!points || points.length === 0) return null;
-    const latest = points[points.length - 1];
-    const stats = {
-      percentRemaining: latest.percentRemaining,
-      resetTimeIso: latest.resetTimeIso,
-      burnPerMin: null,
-    };
-
-    if (points.length >= 2) {
-      const prev = points[points.length - 2];
-      const deltaMin = (latest.timestamp - prev.timestamp) / 60000;
-      const usedDelta = prev.percentRemaining - latest.percentRemaining; // + = consumed since prev
-      if (deltaMin > 0 && usedDelta >= 0) {
-        stats.burnPerMin = usedDelta / deltaMin;
-      }
-    }
-
-    return stats;
-  }
-
-  function renderBurnCard(kindLabel, entry) {
-    const card = el("div", { className: "card" });
-    card.appendChild(
-      el(
-        "div",
-        { className: "card-title" },
-        (entry.group || kindLabel).replace(/:+$/, "") + " Burn-down",
-      ),
-    );
-    card.appendChild(renderBurndownSparkline(entry.points));
-
-    const stats = computeBurnStats(entry.points);
-    if (stats) {
-      const line1 = [Math.round(stats.percentRemaining) + "% left"];
-      if (stats.burnPerMin != null) {
-        line1.push(
-          "burn " +
-            stats.burnPerMin.toFixed(2) +
-            "%/min (" +
-            (stats.burnPerMin * 60).toFixed(1) +
-            "%/hr)",
-        );
-      }
-      const resetsAtMs = stats.resetTimeIso ? new Date(stats.resetTimeIso).getTime() : NaN;
-      if (Number.isFinite(resetsAtMs)) {
-        line1.push("reset in " + formatDuration((resetsAtMs - Date.now()) / 60000));
-      }
-      card.appendChild(
-        el(
-          "div",
-          { style: { fontSize: "11px", color: "var(--text-secondary)", marginTop: "6px" } },
-          line1.join(" · "),
-        ),
-      );
-    }
-    return card;
-  }
-
-  function renderModelSourceBreakdown(container) {
-    const card = el("div", { className: "card" });
-    const header = el("div", { className: "card-header" });
-    header.appendChild(el("span", { className: "card-title" }, "Model Cost Breakdown"));
-    card.appendChild(header);
-
-    if (!historySourceModels || historySourceModels.length === 0) {
-      card.appendChild(
-        el(
-          "div",
-          { className: "hint", style: { fontSize: "11px", color: "var(--text-muted)" } },
-          "No usage recorded for this range.",
-        ),
-      );
-      container.appendChild(card);
-      return;
-    }
-
-    const bySource = new Map();
-    historySourceModels.forEach((row) => {
-      const src = normalizeSourceName(row.sourceProviderID);
-      if (!bySource.has(src)) bySource.set(src, []);
-      bySource.get(src).push(row);
-    });
-    const sources = [...bySource.keys()].sort((a, b) => {
-      const ka = sourceSortKey(a),
-        kb = sourceSortKey(b);
-      return ka !== kb ? ka - kb : a.localeCompare(b);
-    });
-    if (!sources.includes(historyGroupBy)) historyGroupBy = "All";
-
-    const groupSelect = el("select", {
-      className: "filter-select",
-      onChange: (e) => {
-        historyGroupBy = e.target.value;
-        renderHistory();
-      },
-    });
-    ["All", ...sources].forEach((s) => {
-      const opt = el("option", { value: s }, s === "All" ? "All sources" : s);
-      if (s === historyGroupBy) opt.setAttribute("selected", "");
-      groupSelect.appendChild(opt);
-    });
-    card.appendChild(
-      el("div", { className: "filter-bar", style: { padding: "0 0 4px 0" } }, groupSelect),
-    );
-
-    const rows =
-      historyGroupBy === "All"
-        ? historySourceModels.map((r) => ({
-            label: normalizeSourceName(r.sourceProviderID) + "/" + r.sourceModelID,
-            costUsd: r.costUsd,
-          }))
-        : bySource.get(historyGroupBy).map((r) => ({ label: r.sourceModelID, costUsd: r.costUsd }));
-    rows.sort((a, b) => (b.costUsd || 0) - (a.costUsd || 0));
-
-    const wrap = el("div", { style: { marginTop: "8px" } });
-    const maxCost = Math.max(...rows.map((r) => r.costUsd || 0), 0.0001);
-    rows.slice(0, 8).forEach((r) => {
-      const row = el("div", { style: { marginBottom: "6px" } });
-      row.appendChild(
-        el(
-          "div",
-          {
-            style: {
-              display: "flex",
-              justifyContent: "space-between",
-              fontSize: "11px",
-              marginBottom: "2px",
-            },
-          },
-          el("span", {}, r.label),
-          el("span", { style: { fontFamily: "var(--font-mono)" } }, fmtUsd(r.costUsd || 0)),
-        ),
-      );
-      const barWrap = el("div", { className: "percent-bar-container" });
-      const pct = Math.max(2, Math.round(((r.costUsd || 0) / maxCost) * 100));
-      barWrap.appendChild(
-        el("div", { className: "percent-bar-fill good", style: { width: pct + "%" } }),
-      );
-      row.appendChild(barWrap);
-      wrap.appendChild(row);
-    });
-    card.appendChild(wrap);
-    container.appendChild(card);
-  }
-
-  function renderBurningSessionsCard(container) {
-    const card = el("div", { className: "card" });
-    card.appendChild(el("div", { className: "card-title" }, "What's Burning Your Quota"));
-    card.appendChild(
-      el(
-        "div",
-        { style: { fontSize: "10px", color: "var(--text-muted)", marginBottom: "6px" } },
-        "Local sessions ranked by weighted tokens in the " +
-          historyBurningWindowLabel.toLowerCase() +
-          " (this machine only, approximate).",
-      ),
-    );
-
-    const sessions = (historyBurningSessions || []).filter(
-      (s) => s.tokens && (s.tokens.input || s.tokens.output),
-    );
-    if (sessions.length === 0) {
-      card.appendChild(
-        el(
-          "div",
-          { className: "hint", style: { fontSize: "11px", color: "var(--text-muted)" } },
-          "No active sessions in this window.",
-        ),
-      );
-      container.appendChild(card);
-      return;
-    }
-
-    const weight = (s) =>
-      (s.tokens.input || 0) +
-      (s.tokens.output || 0) +
-      (s.tokens.cache_write || 0) +
-      (s.tokens.cache_read || 0) * 0.1;
-    const ranked = sessions
-      .map((s) => ({ ...s, weight: weight(s) }))
-      .sort((a, b) => b.weight - a.weight);
-    const totalWeight = ranked.reduce((sum, s) => sum + s.weight, 0) || 1;
-
-    ranked.slice(0, 5).forEach((s) => {
-      const row = el("div", { style: { marginBottom: "8px" } });
-      const title = s.title || "Session " + String(s.sessionID || "").slice(0, 8);
-      row.appendChild(el("div", { style: { fontSize: "11px", marginBottom: "2px" } }, title));
-      const pct = Math.round((s.weight / totalWeight) * 100);
-      row.appendChild(
-        el(
-          "div",
-          { style: { fontSize: "10px", color: "var(--text-muted)" } },
-          pct +
-            "% of local burn · " +
-            fmtCompact(s.weight) +
-            " weighted tokens · " +
-            formatNumber(s.messageCount || 0) +
-            " msgs",
-        ),
-      );
-      const barWrap = el("div", { className: "percent-bar-container" });
-      barWrap.appendChild(
-        el("div", { className: "percent-bar-fill good", style: { width: Math.max(2, pct) + "%" } }),
-      );
-      row.appendChild(barWrap);
-      card.appendChild(row);
-    });
-    container.appendChild(card);
-  }
-
-  function renderResetHistoryList(resets) {
-    if (!resets || resets.length === 0) {
-      return el(
-        "div",
-        { className: "hint", style: { fontSize: "11px", color: "var(--text-muted)" } },
-        "No resets recorded yet.",
-      );
-    }
-
-    const wrap = el("div", {});
-    const capped = resets.filter((r) => (r.quota_used || 0) >= 99).length;
-    wrap.appendChild(
-      el(
-        "div",
-        { style: { fontSize: "10px", color: "var(--text-muted)", marginBottom: "6px" } },
-        capped + " of " + resets.length + " window(s) fully capped (≥99% used)",
-      ),
-    );
-
-    resets.slice(0, 6).forEach((r) => {
-      const used = Math.round(r.quota_used || 0);
-      const left = Math.round(r.quota_remaining ?? 100 - used);
-      wrap.appendChild(
-        renderKV(
-          new Date(r.reset_at).toLocaleDateString() + " · " + r.reset_type,
-          used + "% used · " + left + "% left unused",
-        ),
-      );
-    });
-    return wrap;
-  }
-
-  function renderHistoryInto(container) {
-    if (historyReadError) {
-      container.appendChild(el("div", { className: "history-diagnostic" }, historyReadError));
-    }
-    if (!historyProvidersLoaded) {
-      container.appendChild(
-        el(
-          "div",
-          { className: "empty-state" },
-          el("div", { className: "icon" }, "📈"),
-          el("div", { className: "text" }, "Loading history..."),
-        ),
-      );
-      return;
-    }
-
-    if (historyProviders.length === 0) {
-      container.appendChild(
-        el(
-          "div",
-          { className: "empty-state" },
-          el("div", { className: "icon" }, "📈"),
-          el("div", { className: "text" }, "No quota history yet"),
-          el(
-            "div",
-            { className: "hint" },
-            "Snapshots are captured automatically whenever quota is checked.",
+          ui.field(
+            "Threshold",
+            ui.input({
+              type: "number",
+              min: "0",
+              step: "any",
+              value: String(v.threshold),
+              onInput: (e) => ((v.threshold = parseFloat(e.target.value) || 0), paintPreview()),
+            }),
           ),
         ),
-      );
-      return;
-    }
-
-    const controls = el("div", { className: "filter-bar" });
-
-    const providerSelect = el("select", {
-      className: "filter-select",
-      onChange: (e) => {
-        historyProvider = e.target.value;
-        historyAccount = "all";
-        historyWindow = null;
-        loadHistory();
-      },
-    });
-    historyProviders.forEach((p) => {
-      const opt = el("option", { value: p }, normalizeSourceName(p));
-      if (p === historyProvider) opt.setAttribute("selected", "");
-      providerSelect.appendChild(opt);
-    });
-    controls.appendChild(providerSelect);
-    const accountSelect = el("select", {
-      className: "filter-select history-account-filter",
-      onChange: (e) => {
-        historyAccount = e.target.value;
-        renderHistory();
-      },
-    });
-    const accounts = [
-      ...new Set([
-        ...historyQuota.map((row) => row.accountIdentity || "unknown"),
-        ...historyAccounting.map((row) => row.detail.accountIdentity),
-      ]),
-    ];
-    for (const id of ["all", ...accounts]) {
-      const option = el(
-        "option",
-        { value: id },
-        id === "all"
-          ? "All accounts (separate series)"
-          : id === "unknown"
-            ? "Unknown account"
-            : "Account " + id.slice(0, 8),
-      );
-      if (historyAccount === id) option.setAttribute("selected", "");
-      accountSelect.appendChild(option);
-    }
-    controls.appendChild(accountSelect);
-
-    const rangeSelect = el("select", {
-      className: "filter-select",
-      onChange: (e) => {
-        historyDays = parseInt(e.target.value, 10);
-        loadHistory();
-      },
-    });
-    [
-      [7, "Last 7 days"],
-      [30, "Last 30 days"],
-    ].forEach(([val, label]) => {
-      const opt = el("option", { value: String(val) }, label);
-      if (val === historyDays) opt.setAttribute("selected", "");
-      rangeSelect.appendChild(opt);
-    });
-    controls.appendChild(rangeSelect);
-
-    container.appendChild(controls);
-
-    container.appendChild(
-      el(
-        "div",
-        {
-          className: "history-diagnostic",
-          style: { marginBottom: "8px", color: "var(--text-secondary)" },
-        },
-        "Unknown observations are kept separate from identified accounts. An account label identifies only observations from the same selected account.",
-      ),
-    );
-    const selectedHistory = (historyWindow ? [] : historyQuota).filter(
-      (item) => historyAccount === "all" || (item.accountIdentity || "unknown") === historyAccount,
-    );
-    const selectedAccounting = historyAccounting.filter(
-      (item) =>
-        (historyAccount === "all" || item.detail.accountIdentity === historyAccount) &&
-        (!historyWindow || item.detail.windowId === historyWindow),
-    );
-    if (historyWindow)
-      container.appendChild(
-        el(
-          "button",
-          {
-            className: "btn btn-sm",
-            onClick: () => {
-              historyWindow = null;
-              renderHistory();
-            },
-          },
-          "Window: " + historyWindow + " · Show all windows",
-        ),
-      );
-    const eventCard = el("div", { className: "card" });
-    eventCard.appendChild(el("div", { className: "card-title" }, "Confirmed Reset Events"));
-    eventCard.appendChild(el("div", { className: "hint" }, resetStatus));
-    const selectedEvents = resetEvents.filter(
-      (event) =>
-        event.providerId === historyProvider &&
-        (historyAccount === "all" || event.accountIdentity === historyAccount) &&
-        (!historyWindow || event.windowId === historyWindow),
-    );
-    if (!selectedEvents.length)
-      eventCard.appendChild(el("div", { className: "hint" }, "No confirmed resets recorded."));
-    selectedEvents.slice(0, 20).forEach((event) => {
-      eventCard.appendChild(
-        el(
-          "div",
-          {},
-          event.windowId +
-            " · Account " +
-            event.accountIdentity.slice(0, 8) +
-            " · " +
-            event.state +
-            " · " +
-            new Date(event.observedAt).toLocaleString(),
-        ),
-      );
-      if (event.state === "uncertain")
-        eventCard.appendChild(
-          el(
-            "button",
-            {
-              className: "btn btn-sm",
-              onClick: async () => {
-                if (
-                  window.confirm(
-                    "A notice may already have appeared. Retry this reset notification?",
-                  )
-                ) {
-                  try {
-                    await api.resets.retry(event.id);
-                    await loadHistory();
-                  } catch {
-                    showToast("Reset retry unavailable", "error");
-                  }
-                }
-              },
-            },
-            "Retry uncertain notice",
+        ui.field(
+          "Scope",
+          ui.select(
+            [
+              ["global", "All usage"],
+              ["provider", "One provider"],
+              ["model", "One model"],
+            ],
+            v.scopeType,
+            (x) => ((v.scopeType = x), syncScope()),
           ),
-        );
-    });
-    container.appendChild(eventCard);
-    const latestDetails = new Map();
-    for (const item of selectedAccounting) latestDetails.set(item.detail.key, item.detail);
-    if (latestDetails.size)
-      container.appendChild(renderAccountingRows([...latestDetails.values()]));
-    for (const snapshot of selectedHistory.filter((item) => item.error).slice(-5)) {
-      container.appendChild(
-        el(
-          "div",
-          { className: "history-diagnostic" },
-          new Date(snapshot.timestamp).toLocaleString() + ": " + snapshot.error,
         ),
-      );
-    }
-    const byKind = groupQuotaSnapshotsByKind(selectedHistory);
-    if (byKind.size === 0) {
-      const card = el("div", { className: "card" });
-      card.appendChild(el("div", { className: "card-title" }, "Quota Burn-down"));
-      card.appendChild(renderBurndownSparkline([]));
-      container.appendChild(card);
-    } else {
-      // 5h-like windows first (fastest-moving, most actionable), then the rest.
-      const kinds = [...byKind.keys()].sort((a, b) => {
-        return a.localeCompare(b);
-      });
-      kinds.forEach((k) => container.appendChild(renderBurnCard(k, byKind.get(k))));
-    }
-
-    container.appendChild(
-      el(
-        "div",
-        { style: { fontSize: "11px", color: "var(--text-muted)" } },
-        "Local usage totals are not filtered by quota account.",
-      ),
-    );
-    renderBurningSessionsCard(container);
-    renderModelSourceBreakdown(container);
-
-    const resetCard = el("div", { className: "card" });
-    resetCard.appendChild(
-      el("div", { className: "card-title" }, "Legacy Reset History (account unknown)"),
-    );
-    resetCard.appendChild(
-      renderResetHistoryList(
-        historyAccount === "all" || historyAccount === "unknown" ? historyResets : [],
-      ),
-    );
-    container.appendChild(resetCard);
-  }
-
-  function renderHistory() {
-    const c = $(".tab-content");
-    if (c) {
-      clear(c);
-      renderHistoryInto(c);
-    }
-  }
-
-  function showInitStoreModal() {
-    showPassphraseModal(
-      "Create API Key Store",
-      "Set a master passphrase to encrypt your API keys at rest.",
-      async (pass) => {
-        await api.apikeys.init(pass);
-        showToast("Key store initialized");
-        await loadApikeyStatus();
-      },
-    );
-  }
-
-  function showUnlockModal() {
-    showPassphraseModal("Unlock Key Store", "Enter your master passphrase.", async (pass) => {
-      await api.apikeys.unlock(pass);
-      showToast("Key store unlocked");
-      await loadApikeyStatus();
+        scopeFields,
+        preview,
+      ];
+      syncScope();
+      return {
+        body,
+        actions: [
+          ui.button("Cancel", close, { small: true }),
+          ui.button(
+            "Create alert",
+            async () => {
+              try {
+                await api.alerts.create({
+                  name: v.name || "New alert",
+                  scope: {
+                    type: v.scopeType,
+                    providerId: v.providerId || undefined,
+                    modelId: v.modelId || undefined,
+                  },
+                  window: v.window,
+                  metric: v.metric,
+                  threshold: v.threshold,
+                  direction: v.direction,
+                });
+                toast("Alert created");
+                close();
+                await loadAlerts();
+              } catch (e) {
+                toast(e.message, "error");
+              }
+            },
+            { kind: "primary", small: true },
+          ),
+        ],
+      };
     });
-  }
-
-  function showExportModal() {
-    showPassphraseModal(
-      "Export API Keys",
-      "Set a one-time passphrase to encrypt the export file.",
-      async (pass) => {
-        const result = await api.apikeys.export(pass);
-        const blob = new Blob([JSON.stringify(result.bundle, null, 2)], {
-          type: "application/json",
-        });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = result.defaultFileName;
-        a.click();
-        URL.revokeObjectURL(url);
-        showToast("Keys exported");
-      },
-    );
-  }
-
-  function showAddKeyModal() {
-    const overlay = el("div", {
-      className: "modal-overlay",
-      onClick: (e) => {
-        if (e.target === overlay) overlay.remove();
-      },
-    });
-    const modal = el("div", { className: "modal" });
-    modal.appendChild(el("div", { className: "modal-title" }, "Add API Key"));
-    const vals = { providerId: "", apiKey: "", label: "" };
-    [
-      ["Provider ID", "text", "providerId", "e.g. openai, anthropic"],
-      ["API Key", "password", "apiKey", "sk-..."],
-      ["Label (optional)", "text", "label", "e.g. Work account"],
-    ].forEach(([label, type, key, placeholder]) => {
-      const g = el("div", { className: "form-group" });
-      g.appendChild(el("label", { className: "form-label" }, label));
-      g.appendChild(
-        el("input", {
-          className: "form-input",
-          type: type,
-          placeholder: placeholder,
-          onInput: (e) => (vals[key] = e.target.value),
-        }),
-      );
-      modal.appendChild(g);
-    });
-    const actions = el("div", { className: "modal-actions" });
-    actions.appendChild(
-      el("button", { className: "btn btn-small", onClick: () => overlay.remove() }, "Cancel"),
-    );
-    actions.appendChild(
-      el(
-        "button",
-        {
-          className: "btn btn-small btn-primary",
-          onClick: async () => {
-            try {
-              await api.apikeys.save(vals.providerId, vals.apiKey, vals.label || undefined);
-              showToast("API key saved");
-              overlay.remove();
-              await loadApikeyStatus();
-            } catch (e) {
-              showToast(e.message, "error");
-            }
-          },
-        },
-        "Save",
-      ),
-    );
-    modal.appendChild(actions);
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
   }
 
   function showPassphraseModal(title, desc, onConfirm) {
-    const overlay = el("div", {
-      className: "modal-overlay",
-      onClick: (e) => {
-        if (e.target === overlay) overlay.remove();
-      },
-    });
-    const modal = el("div", { className: "modal" });
-    modal.appendChild(el("div", { className: "modal-title" }, title));
-    if (desc)
-      modal.appendChild(
-        el(
-          "div",
-          { style: { fontSize: "11px", color: "var(--text-secondary)", marginBottom: "12px" } },
-          desc,
-        ),
-      );
     let pass = "";
-    const g = el("div", { className: "form-group" });
-    g.appendChild(el("label", { className: "form-label" }, "Passphrase"));
-    g.appendChild(
-      el("input", {
-        className: "form-input",
-        type: "password",
-        placeholder: "Enter passphrase",
-        onInput: (e) => (pass = e.target.value),
-      }),
-    );
-    modal.appendChild(g);
-    const actions = el("div", { className: "modal-actions" });
-    actions.appendChild(
-      el("button", { className: "btn btn-small", onClick: () => overlay.remove() }, "Cancel"),
-    );
-    actions.appendChild(
-      el(
-        "button",
-        {
-          className: "btn btn-small btn-primary",
-          onClick: async () => {
+    ui.openModal(title, (close) => {
+      const submit = async () => {
+        try {
+          await onConfirm(pass);
+          close();
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      };
+      return {
+        body: [
+          desc ? el("div", { className: "modal-desc" }, desc) : null,
+          ui.field(
+            "Passphrase",
+            ui.input({
+              type: "password",
+              placeholder: "Enter passphrase",
+              onInput: (e) => (pass = e.target.value),
+              onKeydown: (e) => {
+                if (e.key === "Enter") submit();
+              },
+            }),
+          ),
+        ],
+        actions: [
+          ui.button("Cancel", close, { small: true }),
+          ui.button("Confirm", submit, { kind: "primary", small: true }),
+        ],
+      };
+    });
+  }
+
+  function showAddKeyModal() {
+    const v = { providerId: "", apiKey: "", label: "" };
+    ui.openModal("Add API key", (close) => ({
+      body: [
+        ui.field(
+          "Provider ID",
+          ui.input({
+            type: "text",
+            placeholder: "e.g. openai, anthropic",
+            onInput: (e) => (v.providerId = e.target.value),
+          }),
+        ),
+        ui.field(
+          "API key",
+          ui.input({
+            type: "password",
+            placeholder: "sk-…",
+            onInput: (e) => (v.apiKey = e.target.value),
+          }),
+        ),
+        ui.field(
+          "Label (optional)",
+          ui.input({
+            type: "text",
+            placeholder: "e.g. Work account",
+            onInput: (e) => (v.label = e.target.value),
+          }),
+        ),
+      ],
+      actions: [
+        ui.button("Cancel", close, { small: true }),
+        ui.button(
+          "Save key",
+          async () => {
             try {
-              await onConfirm(pass);
-              overlay.remove();
+              await api.apikeys.save(v.providerId, v.apiKey, v.label || undefined);
+              toast("API key saved");
+              close();
+              await loadApikeys();
             } catch (e) {
-              showToast(e.message, "error");
+              toast(e.message, "error");
             }
           },
-        },
-        "Confirm",
-      ),
-    );
-    modal.appendChild(actions);
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
+          { kind: "primary", small: true },
+        ),
+      ],
+    }));
   }
 
-  // ===========================================================================
-  // Utilities
-  // ===========================================================================
-  function renderKV(key, value, color) {
-    const row = el("div", { className: "kv-row" });
-    row.appendChild(el("span", { className: "key" }, key));
-    row.appendChild(el("span", { className: "value", style: color ? { color } : {} }, value));
-    return row;
-  }
-
-  function toggleTheme() {
-    theme = theme === "dark" ? "light" : "dark";
-    localStorage.setItem("quota-theme", theme);
-    applyTheme();
-    renderHeaderActions();
-  }
-
+  // ── Theme ──────────────────────────────────────────────────────────────
   function applyTheme() {
-    if (theme === "light") {
-      document.documentElement.setAttribute("data-theme", "light");
-    } else {
-      document.documentElement.removeAttribute("data-theme");
-    }
+    if (S.theme === "light" || S.theme === "dark")
+      document.documentElement.setAttribute("data-theme", S.theme);
+    else document.documentElement.removeAttribute("data-theme");
   }
 
-  function renderHeaderActions() {
-    const actions = $(".header-actions");
-    if (!actions) return;
-    const themeLabel = theme === "dark" ? "☀ Light" : "☾ Dark";
-    const themeTitle = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
-    const btns = $$(".btn", actions);
-    // The toggle is the second button (index 1)
-    const toggleBtn = btns[1];
-    if (toggleBtn && toggleBtn.title && toggleBtn.title.includes("theme")) {
-      toggleBtn.textContent = themeLabel;
-      toggleBtn.title = themeTitle;
-    }
-  }
-
-  // ===========================================================================
-  // Init
-  // ===========================================================================
-  function init() {
-    // Load saved theme
-    const saved = localStorage.getItem("quota-theme");
-    if (saved === "light" || saved === "dark") {
-      theme = saved;
-    }
+  function setTheme(theme) {
+    S.theme = theme;
+    if (theme === "system") localStorage.removeItem("quota-theme");
+    else localStorage.setItem("quota-theme", theme);
     applyTheme();
+    renderView();
+  }
 
-    render();
+  // ── Context handed to views ────────────────────────────────────────────
+  const ctx = {
+    api,
+    S,
+    DAY_MS,
+    go,
+    rerender,
+    renderView,
+    load: {
+      quota: refreshQuota,
+      timeline: loadTimeline,
+      usageAggregate: loadUsageAggregate,
+      merged: loadMerged,
+      alerts: loadAlerts,
+      pricing: loadPricing,
+      apikeys: loadApikeys,
+      version: loadVersion,
+      history: loadHistory,
+      sessions: loadSessions,
+    },
+    quota: { groupEntries, quotaWindows, filterEntries, windowTag, usedOf, countdown },
+    modals: {
+      addPricing: showAddPricingModal,
+      createAlert: showCreateAlertModal,
+      passphrase: showPassphraseModal,
+      addKey: showAddKeyModal,
+    },
+    describeRule,
+    formatMetricValue,
+    setTheme,
+  };
+  TW.ctx = ctx;
+
+  // Escape closes the topmost modal.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const overlays = document.querySelectorAll(".modal-overlay");
+    if (overlays.length) overlays[overlays.length - 1].remove();
+  });
+
+  // ── Init ───────────────────────────────────────────────────────────────
+  function init() {
+    const saved = localStorage.getItem("quota-theme");
+    S.theme = saved === "light" || saved === "dark" ? saved : "system";
+    applyTheme();
+    renderShell();
+    if (view(S.tab).enter) view(S.tab).enter(ctx, {});
+
     const unsubscribeResets = api.resets?.onOpen((selection) => {
-      historyProvider = selection.providerId;
-      historyAccount = selection.accountIdentity;
-      historyWindow = selection.windowId;
-      activeTab = 5;
-      render();
-      loadHistory();
+      const H = S.history;
+      H.provider = selection.providerId;
+      H.account = selection.accountIdentity;
+      H.window = selection.windowId;
+      go("quota", { focusHistory: true });
     });
-    const unsubscribeQuota = api.quota.onUpdate(receiveQuotaSnapshot);
+    const unsubscribeQuota = api.quota.onUpdate(receiveQuota);
     api.quota
       .state()
-      .then(receiveQuotaSnapshot)
-      .catch((e) => showToast(e.message, "error"));
-    const unsubscribeBudgets = api.alerts.onUpdate(receiveBudgetState);
+      .then(receiveQuota)
+      .catch((e) => toast(e.message, "error"));
+    const unsubscribeBudgets = api.alerts.onUpdate(receiveBudget);
     const unsubscribeHistory = api.dashboardHistory.onUpdate(() => {
-      historyProvidersLoaded = false;
-      if (activeTab === 5) loadHistory();
+      S.history.providersLoaded = false;
+      if (S.tab === "quota") loadHistory();
     });
+    loadAlerts();
+    loadPricing();
+    loadApikeys();
+    loadVersion();
+
+    // Keep reset countdowns current between quota refreshes without re-rendering.
+    const countdownTimer = setInterval(tickCountdowns, 30_000);
+    // Charts resolve colors through CSS variables; repaint when the system scheme flips.
+    const media = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+    const onScheme = () => {
+      if (S.theme === "system") renderView();
+    };
+    if (media && media.addEventListener) media.addEventListener("change", onScheme);
     window.addEventListener(
       "beforeunload",
       () => {
         unsubscribeQuota();
         unsubscribeBudgets();
         unsubscribeHistory();
-        unsubscribeResets?.();
+        if (unsubscribeResets) unsubscribeResets();
+        clearInterval(countdownTimer);
+        if (media && media.removeEventListener) media.removeEventListener("change", onScheme);
       },
       { once: true },
     );
-    loadAlerts();
-    loadPricing();
-    loadApikeyStatus();
-
-    // Keep reset countdowns current between quota refreshes without re-rendering.
-    const countdownTimer = setInterval(tickResetCountdowns, 30000);
-    window.addEventListener("beforeunload", () => clearInterval(countdownTimer), { once: true });
-
-    // Listen for refresh events from main process
-    if (api.app.onRefresh) {
-      api.app.onRefresh(() => refreshQuota());
-    }
+    if (api.app.onRefresh) api.app.onRefresh(() => refreshQuota());
   }
 
   document.addEventListener("DOMContentLoaded", init);

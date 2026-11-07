@@ -57,11 +57,71 @@ Menu.buildFromTemplate = (template) => {
   trayRefresh = template.find((item) => item.label === "Refresh Quota")?.click;
   return buildMenu(template);
 };
+function emptyTimeline(params) {
+  const DAY_MS = 86_400_000;
+  const days = [7, 14, 30, 90].includes(params?.days) ? params.days : 30;
+  const tzOffsetMinutes = Number.isFinite(params?.tzOffsetMinutes) ? params.tzOffsetMinutes : 0;
+  const buckets = () => ({ input: 0, output: 0, reasoning: 0, cache_read: 0, cache_write: 0 });
+  const split = () => ({ totalTokens: 0, costUsd: 0, responses: 0 });
+  const sources = () => ({ opencode: split(), "claude-code": split(), codex: split() });
+  const now = Date.now();
+  const offsetMs = tzOffsetMinutes * 60_000;
+  const todayStart = Math.floor((now - offsetMs) / DAY_MS) * DAY_MS + offsetMs;
+  const sinceMs = todayStart - (days - 1) * DAY_MS;
+  const daily = Array.from({ length: days }, (_, i) => {
+    const startMs = sinceMs + i * DAY_MS;
+    return {
+      day: new Date(startMs - offsetMs).toISOString().slice(0, 10),
+      startMs,
+      tokens: buckets(),
+      totalTokens: 0,
+      costUsd: 0,
+      responses: 0,
+      sessions: 0,
+      bySource: sources(),
+    };
+  });
+  const grid = () => Array.from({ length: 7 }, () => new Array(24).fill(0));
+  const withSessions = sources();
+  for (const key of Object.keys(withSessions)) withSessions[key].sessions = 0;
+  return {
+    generatedAtMs: now,
+    sinceMs,
+    untilMs: now,
+    days,
+    tzOffsetMinutes,
+    daily,
+    hourOfWeek: grid(),
+    hourOfWeekResponses: grid(),
+    totals: {
+      tokens: buckets(),
+      totalTokens: 0,
+      costUsd: 0,
+      responses: 0,
+      sessions: 0,
+      pricedShare: null,
+    },
+    bySource: withSessions,
+    previous: {
+      sinceMs: sinceMs - days * DAY_MS,
+      totalTokens: 0,
+      costUsd: 0,
+      responses: 0,
+      sessions: 0,
+    },
+    models: [],
+    undatedResponses: 0,
+    unavailable: [],
+  };
+}
+
 const fixtures = {
   "tokens:query": () => ({
     aggregate: { totals: { costUsd: 0 }, bySourceModel: [], bySession: [] },
     window: { label: "7 days" },
   }),
+  // An empty but well-formed timeline: the analytical tabs must render with no local usage.
+  "tokens:timeline": (_event, params) => emptyTimeline(params),
   "pricing:list": () => ({ overrides: [], snapshot: null }),
   "apikeys:status": () => ({ state: "empty" }),
 };
@@ -122,6 +182,9 @@ async function smoke() {
     await waitFor(() => BrowserWindow.getAllWindows().length > 0, "main window");
     const win = BrowserWindow.getAllWindows()[0];
     const evaluate = (code) => win.webContents.executeJavaScript(code);
+    // Tabs are addressed by key, not position, so a reorder cannot retarget a check.
+    const openTab = (key) =>
+      evaluate(`document.querySelector('.tab-btn[data-tab="${key}"]').click(); undefined`);
     await waitFor(
       () => evaluate('document.body.innerText.includes("OpenAI (Plus)")'),
       "fixture dashboard",
@@ -156,18 +219,18 @@ async function smoke() {
       await evaluate("window.quotaApi.app.getVersion()"),
       process.env.QUOTA_SMOKE_VERSION,
     );
-    for (const [index, expected] of [
-      [1, "7 days"],
-      [2, "No budget alerts configured"],
-      [3, "override"],
-      [4, "Create"],
-      [5, "History"],
-      [6, "3 sessions, 3 responses"],
+    for (const [tab, expected] of [
+      ["usage", "Token mix"],
+      ["alerts", "No budget alerts configured"],
+      ["settings", "Price overrides"],
+      ["settings", "Create Key Store"],
+      ["quota", "Quota History"],
+      ["sessions", "3 sessions, 3 responses"],
     ]) {
-      await evaluate(`document.querySelectorAll('.tab-btn')[${index}].click()`);
+      await openTab(tab);
       await waitFor(
         () => evaluate(`document.body.innerText.includes(${JSON.stringify(expected)})`),
-        `tab ${index}`,
+        `${tab} tab shows ${expected}`,
       );
     }
     win.webContents.send("reset:open", {
@@ -179,10 +242,9 @@ async function smoke() {
       () => evaluate("document.body.innerText.includes('Window: hourly')"),
       "reset notice opens selected window",
     );
-    assert.equal(
-      await evaluate("document.querySelector('.app-header h1').textContent"),
-      "Quota History",
-    );
+    assert.equal(await evaluate("document.querySelector('.app-header h1').textContent"), "Quota");
+    assert.ok(await evaluate("document.querySelector('.tab-btn.active').dataset.tab === 'quota'"));
+    assert.ok(await evaluate("document.getElementById('quota-history') !== null"));
     assert.ok(await evaluate("document.body.innerText.includes('Confirmed Reset Events')"));
     const initialHistory = await evaluate(
       'window.quotaApi.dashboardHistory.quotaHistory("openai")',
@@ -222,7 +284,7 @@ async function smoke() {
       false,
     );
     assert.equal(fetches, 1, "rule edits must not refetch provider quota");
-    await evaluate("document.querySelectorAll('.tab-btn')[0].click()");
+    await openTab("quota");
     const before = fetches;
     await evaluate("document.querySelector('.btn-refresh').click()");
     await waitFor(() => fetches > before, "manual refresh");
@@ -316,7 +378,7 @@ async function smoke() {
       await evaluate("[window.__budgetEvents, window.__historyEvents]"),
       eventCounts,
     );
-    await evaluate("document.querySelectorAll('.tab-btn')[0].click(); undefined");
+    await openTab("quota");
     await waitFor(
       () => evaluate("document.querySelectorAll('.accounting-details').length > 0"),
       "structured accounting details",
@@ -400,15 +462,11 @@ async function smoke() {
       90,
     );
     assert.equal(fetches, beforeLocal, "local counters must not make provider HTTP requests");
-    await evaluate(
-      "document.querySelector('.filter-select').value='custom-local';document.querySelector('.filter-select').dispatchEvent(new Event('change'));undefined",
-    );
-    assert.equal(await evaluate("document.querySelector('.filter-select').value"), "custom-local");
-    assert.ok(await evaluate("document.body.innerText.includes('observed request estimate')"));
-    assert.ok(
-      await evaluate(
-        "document.querySelector('.filter-select').innerText.includes('All providers (1)')",
-      ),
+    // With a single provider the quota tab shows it directly; the provider filter only
+    // appears once there is something to choose between.
+    await waitFor(
+      () => evaluate("document.querySelector('.seg[aria-label=\"Provider\"]') === null"),
+      "no provider filter for a single provider",
     );
     await waitFor(
       () => evaluate("document.body.innerText.includes('observed request estimate')"),
@@ -439,9 +497,6 @@ async function smoke() {
         (await win.webContents.capturePage()).toPNG(),
       );
     }
-    await evaluate(
-      "document.querySelector('.filter-select').value='all';document.querySelector('.filter-select').dispatchEvent(new Event('change'));undefined",
-    );
     // Presentation fixture: provider integration is covered separately by quota IPC tests.
     const { projectAccountingDetails } = await import(
       new URL("../lib/accounting-display.js", pathToFileURL(process.env.QUOTA_SMOKE_MAIN)).href
@@ -501,7 +556,7 @@ async function smoke() {
     assert.deepEqual(errors, []);
     clearTimeout(deadline);
     console.log(
-      `Installed Electron GUI smoke passed: ${process.platform}, Electron ${process.versions.electron}, seven tabs incl. sessions, config, startup/timer/tray/wake/coalesced HTTP refresh, stale/recovery, unsubscribe, persisted history, windowed budgets/rule edits, version, preload`,
+      `Installed Electron GUI smoke passed: ${process.platform}, Electron ${process.versions.electron}, six tabs incl. sessions, config, startup/timer/tray/wake/coalesced HTTP refresh, stale/recovery, unsubscribe, persisted history, windowed budgets/rule edits, version, preload`,
     );
     assert.ok(helpers.length > 0, "installed main must launch the real history helper");
     app.once("will-quit", (event) => {
