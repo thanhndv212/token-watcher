@@ -1,6 +1,6 @@
-# Token Watcher 3.11.0
+# Token Watcher 1.0.0
 
-First stable release of the `@thanhndv212/token-watcher` fork. It contains everything in 3.11.0-rc.1 to rc.3 plus the coding-agent usage analysis work listed below. Desktop assets and the runtime tarball are attached to the GitHub release. The package is not published to npm, and desktop assets are unsigned (no Developer ID signing or notarization).
+First stable release of `@thanhndv212/token-watcher`. It contains everything in the 3.11.0-rc.1 to rc.3 prereleases plus the coding-agent usage analysis work listed below. Desktop assets and the runtime tarball are attached to the GitHub release. The package is not published to npm, and desktop assets are unsigned (no Developer ID signing or notarization).
 
 ## Changes since 3.11.0-rc.3
 
@@ -12,6 +12,12 @@ First stable release of the `@thanhndv212/token-watcher` fork. It contains every
 - **Desktop.** A new Sessions tab ([UA-TW-07](work-items/UA_TW07_GUI_SESSION_VIEWS.md)); the dashboard shows the account email and per-window reset countdowns (#78).
 - **Pricing.** The bundled models.dev snapshot is refreshed and re-checked automatically ([record](work-items/PRICING_AUTO_REFRESH.md)).
 - **Fixes.** The correct Claude OAuth keychain account is selected when several exist (#65). The canonical repository name is now Token Watcher (#64).
+
+## Version numbering
+
+The prereleases were numbered 3.11.0-rc.x after the upstream opencode-quota line. Upstream has since published its own 3.11.0 and later releases with different content, so Token Watcher now has its own version line, starting at 1.0.0. The number is not a statement about parity with any upstream release.
+
+Because 1.0.0 sorts below 3.11.0-rc.3, package managers treat it as a downgrade. On Debian-based Linux, install the `.deb` directly with `sudo dpkg -i` (or `apt install ./token-watcher-1.0.0-amd64.deb --allow-downgrades`); `apt upgrade` will not pick it up. The macOS app and the AppImage replace the previous copy as usual.
 
 ## Compatibility and upgrade
 
