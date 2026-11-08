@@ -11,33 +11,60 @@
  */
 
 import { execFile } from "child_process";
-import { promisify } from "util";
 
-const execFileAsync = promisify(execFile);
 const LOGIN_SHELL_PATH_TIMEOUT_MS = 2_000;
+/** Grace after the kill for the child's stdout to close before we give up on it. */
+const LOGIN_SHELL_SETTLE_GRACE_MS = 500;
+
+/**
+ * Run `<shell> -ilc <command>` and return the last non-blank stdout line, or
+ * null on any failure. Always settles within the timeout plus a short grace:
+ * an interactive zsh ignores SIGTERM, and one blocked in a syscall (e.g. open()
+ * on a TCC-protected ~/Downloads file sourced from .zshrc, which a GUI launch
+ * waits on indefinitely) never exits on its own. A background job the profile
+ * starts can also hold stdout open after the shell dies, so execFile's
+ * callback alone is not a reliable end signal.
+ */
+function readFromLoginShell(shellPath: string, command: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const finish = (value: string | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      resolve(value);
+    };
+    const child = execFile(
+      shellPath,
+      ["-ilc", command],
+      { timeout: LOGIN_SHELL_PATH_TIMEOUT_MS, killSignal: "SIGKILL", encoding: "utf8" },
+      (error, stdout) => {
+        if (error) return finish(null);
+        // Some shell configs print a banner/MOTD to stdout before our command
+        // runs; the value itself never contains a newline, so the last
+        // non-blank line is safe to take even if earlier lines are noise.
+        const lines = String(stdout)
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+        finish(lines[lines.length - 1] || null);
+      },
+    );
+    if (settled) return;
+    deadline = setTimeout(() => {
+      child?.kill?.("SIGKILL");
+      child?.stdout?.destroy?.();
+      child?.stderr?.destroy?.();
+      finish(null);
+    }, LOGIN_SHELL_PATH_TIMEOUT_MS + LOGIN_SHELL_SETTLE_GRACE_MS);
+    deadline.unref?.();
+  });
+}
 
 export async function resolveLoginShellPath(shellOverride?: string): Promise<string | null> {
   if (process.platform === "win32") return null;
-
-  const shellPath = shellOverride ?? process.env.SHELL ?? "/bin/zsh";
-  try {
-    const { stdout } = await execFileAsync(shellPath, ["-ilc", 'echo -n "$PATH"'], {
-      timeout: LOGIN_SHELL_PATH_TIMEOUT_MS,
-      encoding: "utf8",
-    });
-
-    // Some shell configs print a banner/MOTD to stdout before our command
-    // runs; PATH itself never contains a newline, so the last non-blank
-    // line is safe to take even if earlier lines are noise.
-    const lines = stdout
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const lastLine = lines[lines.length - 1];
-    return lastLine || null;
-  } catch {
-    return null;
-  }
+  return readFromLoginShell(shellOverride ?? process.env.SHELL ?? "/bin/zsh", 'echo -n "$PATH"');
 }
 
 export function mergePathEnv(currentPath: string | undefined, loginShellPath: string): string {
@@ -59,20 +86,7 @@ export async function resolveLoginShellVar(
   shellOverride?: string,
 ): Promise<string | null> {
   if (process.platform === "win32") return null;
-  const shellPath = shellOverride ?? process.env.SHELL ?? "/bin/zsh";
-  try {
-    const { stdout } = await execFileAsync(shellPath, ["-ilc", `echo -n "$${name}"`], {
-      timeout: LOGIN_SHELL_PATH_TIMEOUT_MS,
-      encoding: "utf8",
-    });
-    const lines = stdout
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-    return lines[lines.length - 1] || null;
-  } catch {
-    return null;
-  }
+  return readFromLoginShell(shellOverride ?? process.env.SHELL ?? "/bin/zsh", `echo -n "$${name}"`);
 }
 
 /**
