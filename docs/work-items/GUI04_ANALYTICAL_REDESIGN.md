@@ -1,6 +1,6 @@
 # GUI-04 Analytical desktop redesign
 
-**Status:** implemented on branch `thanhndv212/analytic-ui-redesign`. It is not yet committed or merged, and the main-branch CI gate is still pending.
+**Status:** complete. It was squash-merged in PR #88 (`61c5281`) on 2026-11-07 after every CI check passed.
 
 ## Goal
 
@@ -44,19 +44,31 @@ Evidence dated 2026-11-07, on macOS (Darwin 25.6, Apple silicon):
 - `fmt.compact` dropped zeros from whole numbers, so a 300M axis label read "3M". It now trims zeros only after a decimal point and promotes `999.6K` to `1M`. `tests/gui.renderer-format.test.ts` covers this.
 - `tests/gui.ipc-usage-timeline.test.ts` covers parameter validation, local-day and hour-of-week bucketing, priced-only cost and the reporting of unreadable stores.
 - `pnpm run typecheck`, `pnpm run build` and `pnpm test` pass: 175 test files and 1,819 tests.
+- The first PR #88 CI run failed `desktop-smoke` on macOS and Linux, for two reasons:
+  - The installed-app harness (`scripts/fixtures/gui-smoke.mjs`) had no fixture for `tokens:timeline`.
+  - It still addressed tabs by their old seven-tab positions.
+- The fix has three parts:
+  - The harness serves an empty, well-formed timeline, so the analytical tabs are checked with no local usage.
+  - It opens tabs by `data-tab` key and maps each anchor to the new tab's equivalent text.
+  - It asserts that a single provider gets no provider filter.
+
+  The header status element keeps the `quota-refresh-status` hook. After the fix, `node scripts/smoke-gui.mjs` passed locally on macOS. CI then passed `pnpm-quality`, `runtime-smoke` (Node 20.x and 22.x), `desktop-smoke` (macos-latest and ubuntu-latest) and `required-gate`.
+
+- The follow-up docs PR (#89) hit an intermittent Linux `desktop-smoke` failure. The cause was in the redesign: Quota-view re-renders replaced any `<details>` element the user had opened with a new closed one, so a background refresh collapsed "Balances and usage details". `ui.disclosure` now keeps each element's open state across re-renders. The harness also opens and reads the details in one evaluation inside `waitFor`. The local installed-app smoke then passed three runs in a row.
+- After the merge, the macOS app was built from `61c5281` using the ad-hoc signing path, installed in `/Applications` and launched. The installed `Resources/renderer/` contains `lib/` and `views/` and the formatter fix.
 
 ## Limits
 
-- The renderer views do not yet have DOM-level unit tests. Coverage comes from the packaged-app smoke anchors and the screenshot review, plus unit tests for the timeline IPC and the number formatter.
-- The screenshot review did not cover Linux, Windows or the packaged `.dmg`/AppImage builds. `pnpm run smoke:gui` remains the packaged gate.
+- The renderer views do not yet have DOM-level unit tests. Coverage comes from the installed-app and packaged-app smoke anchors and the screenshot review, plus unit tests for the timeline IPC and the number formatter. The installed-app smoke uses an empty timeline fixture, so CI does not exercise charts drawn from non-empty usage. Only the local screenshot review covers them.
+- The screenshot review covered macOS only, not Linux or Windows. On Linux the only check is the CI installed-app smoke, which runs under Xvfb. `scripts/smoke-packaged-app.mjs` has the updated six-tab anchors but was not run for this change. It runs with the release packaging gate.
 - The Usage heatmap uses the renderer's current UTC offset (`tzOffsetMinutes`). Days that cross a daylight-saving change may place an hour in the neighbouring bucket.
 - The default window size of 420 px is unchanged. The sidebar layout and wide grids appear only after the window is resized.
 
 ## Rollback
 
-GUI-04 changes only the renderer, the build copy step, the smoke anchors and one IPC handler. To roll back:
+GUI-04 changes only the renderer, the build copy step, both smoke harnesses and one IPC handler. To roll back:
 
-1. Revert the GUI-04 commit or commits. This restores the single-file `app.js`, `index.html`, `app.css`, `build-gui.mjs` and the smoke script.
-2. Remove the `tokens:timeline` handler and the preload method. No other caller uses them.
+1. Revert squash commit `61c5281`. This restores the single-file `app.js`, `index.html`, `app.css`, `build-gui.mjs` and both smoke scripts.
+2. The revert also removes the `tokens:timeline` handler, its preload method and its smoke fixture. Nothing else calls them.
 
 No config, cache or data-file format changed, so no migration or cleanup is needed.

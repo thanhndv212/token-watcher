@@ -86,8 +86,8 @@
   }
 
   function accountingDetails(rows) {
-    return el(
-      "details",
+    return ui.disclosure(
+      "quota-accounting-details",
       { className: "card accounting-details" },
       el("summary", { className: "card-title" }, "Balances and usage details"),
       rows.map((row) =>
@@ -616,8 +616,8 @@
       .reverse();
     if (snapErrors.length)
       section.appendChild(
-        el(
-          "details",
+        ui.disclosure(
+          "quota-snapshot-errors",
           { className: "card snapshot-errors" },
           el(
             "summary",
