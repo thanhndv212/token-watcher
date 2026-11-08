@@ -2,6 +2,7 @@
 
 Use the [project README](../README.md) for installation, configuration and usage, and the [contributing guide](../CONTRIBUTING.md) for the development workflow.
 
+- [Post-merge cleanup](POST_MERGE_CLEANUP.md): after each merged PR, fast-forward `main` and remove merged branches, stale agent worktrees and build output with `pnpm run cleanup:merged`.
 - [Coding-agent usage analysis roadmap](usage-analysis-roadmap.md): session usage reports and native Codex reader (complete), and planned import of outcome/activity metadata from Session Knowledge.
 
 ## Implemented work items

@@ -109,12 +109,14 @@ pnpm run build:package:mac             # Build macOS .dmg
 pnpm run build:package:linux           # Build Linux .AppImage/.deb
 pnpm run build:install:mac             # Build macOS .dmg + install to /Applications
 pnpm run upstream:sync                 # Sync upstream plugin references
+pnpm run cleanup:merged                # Post-merge cleanup plan (add -- --apply to run it)
 ```
 
 ## Documentation
 
 - Store project documentation under `docs/` by default, including plans, designs, implementation records and acceptance evidence. Keep standard repository entry points (`README.md`, `CONTRIBUTING.md`, `AGENTS.md`) at the root.
 - Store work-item designs and implementation records in `docs/work-items/`. State whether each item is planned, in progress or complete; preserve evidence dates, validation limits and rollback details.
+- After each merged PR, rebuild/reinstall the desktop app if it changed, then run `pnpm run cleanup:merged -- --apply` (see `docs/POST_MERGE_CLEANUP.md`). It deletes `release/`, so install first.
 - `docs/UPSTREAM_DELIVERY_PLAN.md` is authoritative for delivery status, dependencies and acceptance/release gates; `docs/UPSTREAM_ADOPTION.md` owns upstream provenance and capability mapping.
 - Update `docs/README.md` and relative links when adding or moving documentation. Documentation under `docs/` is versioned by default.
 
