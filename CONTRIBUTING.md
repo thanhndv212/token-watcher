@@ -88,6 +88,10 @@ Recommended settings for `main`:
 - Typical names look like `pnpm-quality`, `runtime-smoke (20.x)`, `runtime-smoke (22.x)` or `CI / ...` variants.
 - Block direct pushes to `main` for non-admin users.
 
+## After Merge
+
+Run `pnpm run cleanup:merged` to preview, then `pnpm run cleanup:merged -- --apply`. It fast-forwards `main` and removes merged local and origin branches, `release/` build output and stale smoke temp folders; `--worktrees` also removes stale agent worktrees. Reinstall the desktop app first if it changed. See [Post-merge cleanup](docs/POST_MERGE_CLEANUP.md).
+
 ## Repo Guardrails
 
 - Never invoke an LLM/model API to compute toast/report output. Everything must remain local and deterministic.
