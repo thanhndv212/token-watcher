@@ -54,6 +54,7 @@ Evidence dated 2026-11-07, on macOS (Darwin 25.6, Apple silicon):
 
   The header status element keeps the `quota-refresh-status` hook. After the fix, `node scripts/smoke-gui.mjs` passed locally on macOS. CI then passed `pnpm-quality`, `runtime-smoke` (Node 20.x and 22.x), `desktop-smoke` (macos-latest and ubuntu-latest) and `required-gate`.
 
+- The follow-up docs PR (#89) hit an intermittent Linux `desktop-smoke` failure. The cause was in the redesign: Quota-view re-renders replaced any `<details>` element the user had opened with a new closed one, so a background refresh collapsed "Balances and usage details". `ui.disclosure` now keeps each element's open state across re-renders. The harness also opens and reads the details in one evaluation inside `waitFor`. The local installed-app smoke then passed three runs in a row.
 - After the merge, the macOS app was built from `61c5281` using the ad-hoc signing path, installed in `/Applications` and launched. The installed `Resources/renderer/` contains `lib/` and `views/` and the formatter fix.
 
 ## Limits

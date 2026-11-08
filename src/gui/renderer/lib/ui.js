@@ -297,8 +297,28 @@
     );
   }
 
+  // Views re-render on every quota update and history load, which replaces each
+  // <details> node. Remember which ones the user opened so a background refresh
+  // never collapses what they are reading.
+  const openDisclosures = new Set();
+  function disclosure(key, attrs, ...children) {
+    return el(
+      "details",
+      {
+        ...attrs,
+        open: openDisclosures.has(key),
+        onToggle: (event) => {
+          if (event.currentTarget.open) openDisclosures.add(key);
+          else openDisclosures.delete(key);
+        },
+      },
+      ...children,
+    );
+  }
+
   TW.ui = {
     card,
+    disclosure,
     segmented,
     chartCard,
     deltaBadge,
