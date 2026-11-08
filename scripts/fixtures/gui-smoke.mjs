@@ -383,21 +383,14 @@ async function smoke() {
       () => evaluate("document.querySelectorAll('.accounting-details').length > 0"),
       "structured accounting details",
     );
-    await evaluate("document.querySelector('.accounting-details').open = true; undefined");
-    assert.ok(
-      await evaluate(
-        "document.querySelector('.accounting-details').innerText.includes('75% remaining')",
-      ),
-    );
-    assert.ok(
-      await evaluate(
-        "document.querySelector('.accounting-details').innerText.includes('Source observation')",
-      ),
-    );
-    assert.ok(
-      await evaluate(
-        "document.querySelector('.accounting-details').innerText.includes('Five-hour')",
-      ),
+    // The quota view re-renders on background quota and history updates; opening the
+    // details and reading them in one evaluation keeps the check off that race.
+    await waitFor(
+      () =>
+        evaluate(
+          "(() => { const d = document.querySelector('.accounting-details'); if (!d) return false; d.open = true; const t = d.innerText; return ['75% remaining', 'Source observation', 'Five-hour'].every((s) => t.includes(s)); })()",
+        ),
+      "accounting details show observation, source and window",
     );
     if (process.env.QUOTA_SMOKE_SCREENSHOT_DIR) {
       await mkdir(process.env.QUOTA_SMOKE_SCREENSHOT_DIR, { recursive: true });
